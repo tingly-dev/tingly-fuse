@@ -35,8 +35,15 @@ sessions/<id>/...           后端私有状态
 | 后端 | 平台 | 视图路径 | 状态 |
 |---|---|---|---|
 | `copy` | 全平台 | `sessions/<id>/root`，每会话不同 | ✅ 基准实现：整份复制基础 checkout |
-| `overlay` | Linux | 固定路径（如 `/workspace/<repo>`），所有会话相同 | 待实现：mount namespace + overlayfs |
+| `overlay` | Linux（默认） | 固定路径 `/workspace/<repo>`，所有会话相同 | ✅ mount namespace + overlayfs，upper/work 在 `sessions/<id>/` |
 | `clone` | macOS（默认） | `sessions/<id>/root`，每会话不同 | ✅ APFS clonefile 写时复制；非 APFS 卷自动退回整份复制 |
+
+`overlay` 后端说明：
+
+- 每次 `exec` 都在新的 mount namespace 里挂载该会话的 overlay（lower = 基础 checkout，upper/work 在会话目录），宿主和其他会话都看不到这个挂载；宿主上的 `/workspace/<repo>` 只是一个空的挂载点。
+- 视图根目录默认 `/workspace`，可用 `TINGLY_FUSE_VIEW_ROOT` 覆盖（在 spawn 时生效，之后记录在会话元数据里）。
+- root 下只用 `CLONE_NEWNS`；非 root 时额外用 user namespace，把自己的 uid/gid 映射为自身，需要 Linux 5.11+ 且允许 unprivileged user namespace。非 root 用户需要先能创建挂载点：`sudo mkdir -p /workspace && sudo chown $USER /workspace`，或改用 `TINGLY_FUSE_VIEW_ROOT`。
+- 内核不支持时用 `--backend copy`。
 
 实现新后端的约定：
 
