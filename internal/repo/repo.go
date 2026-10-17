@@ -158,8 +158,12 @@ func (r *Repo) EnsureBase(ctx context.Context, sha string) (string, error) {
 	if _, err := gitx.Run(ctx, work, "checkout", "--quiet", "--detach", sha); err != nil {
 		return "", err
 	}
-	// Sessions push to the real upstream, not to the local mirror.
+	// Sessions push to the real upstream, not to the local mirror. This must
+	// precede submodule init, which resolves relative URLs against origin.
 	if _, err := gitx.Run(ctx, work, "remote", "set-url", "origin", r.Upstream); err != nil {
+		return "", err
+	}
+	if err := r.initSubmodules(ctx, work); err != nil {
 		return "", err
 	}
 	if err := os.Rename(work, final); err != nil {

@@ -161,3 +161,73 @@ func TestSpawnFailureCleansUp(t *testing.T) {
 		t.Error("expected unknown backend to fail")
 	}
 }
+
+func TestSpawnChecksOutSubmodules(t *testing.T) {
+	t.Setenv("GIT_AUTHOR_NAME", "test")
+	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "test")
+	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+	tmp := t.TempDir()
+	ctx := context.Background()
+
+	// lib.git <- nested.git: a submodule that itself has a submodule.
+	mkrepo := func(name, file string) string {
+		src := filepath.Join(tmp, name+"-src")
+		git(t, tmp, "init", "--quiet", "--initial-branch=main", src)
+		os.WriteFile(filepath.Join(src, file), []byte(name+"\n"), 0o644)
+		git(t, src, "add", ".")
+		git(t, src, "commit", "--quiet", "-m", name)
+		return src
+	}
+	nestedSrc := mkrepo("nested", "nested.txt")
+	nested := filepath.Join(tmp, "nested.git")
+	git(t, tmp, "clone", "--quiet", "--bare", nestedSrc, nested)
+
+	libSrc := mkrepo("lib", "lib.txt")
+	git(t, libSrc, "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", nested, "deps/nested")
+	git(t, libSrc, "commit", "--quiet", "-m", "add nested")
+	lib := filepath.Join(tmp, "lib.git")
+	git(t, tmp, "clone", "--quiet", "--bare", libSrc, lib)
+
+	src := mkrepo("app", "README.md")
+	git(t, src, "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", lib, "libs/lib")
+	git(t, src, "commit", "--quiet", "-m", "add lib")
+	upstream := filepath.Join(tmp, "upstream.git")
+	git(t, tmp, "clone", "--quiet", "--bare", src, upstream)
+
+	m := manager.New(filepath.Join(tmp, "home"))
+	if _, err := m.AddRepo(ctx, "demo", upstream); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := execIn(t, m, "s", "cat", "libs/lib/lib.txt", "libs/lib/deps/nested/nested.txt"); got != "lib\nnested" {
+		t.Errorf("submodule contents = %q", got)
+	}
+	if got := execIn(t, m, "s", "git", "status", "--porcelain", "--ignore-submodules=none"); got != "" {
+		t.Errorf("view not clean: %q", got)
+	}
+	if got := execIn(t, m, "s", "git", "-C", "libs/lib", "remote", "get-url", "origin"); got != lib {
+		t.Errorf("submodule origin = %q, want %q", got, lib)
+	}
+
+	// Submodule repos in the base hold no objects of their own.
+	base := filepath.Join(m.Home, "repos", "demo", "bases", sess.Base)
+	packs, _ := filepath.Glob(filepath.Join(base, ".git", "modules", "*", "objects", "pack", "*.pack"))
+	nestedPacks, _ := filepath.Glob(filepath.Join(base, ".git", "modules", "*", "modules", "*", "objects", "pack", "*.pack"))
+	if len(packs)+len(nestedPacks) != 0 {
+		t.Errorf("base submodules have their own packs: %v %v", packs, nestedPacks)
+	}
+	loose, _ := filepath.Glob(filepath.Join(base, ".git", "modules", "*", "objects", "??", "*"))
+	if len(loose) != 0 {
+		t.Errorf("base submodules have loose objects: %v", loose)
+	}
+
+	// A second base reuses the submodule mirrors instead of cloning again.
+	mirrors, _ := filepath.Glob(filepath.Join(m.Home, "repos", "demo", "modules", "*.git"))
+	if len(mirrors) != 2 {
+		t.Errorf("want 2 submodule mirrors (lib, nested), got %v", mirrors)
+	}
+}
