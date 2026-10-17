@@ -40,7 +40,8 @@ sessions/<id>/...           后端私有状态
 
 `overlay` 后端说明：
 
-- 每次 `exec` 都在新的 mount namespace 里挂载该会话的 overlay（lower = 基础 checkout，upper/work 在会话目录），宿主和其他会话都看不到这个挂载；宿主上的 `/workspace/<repo>` 只是一个空的挂载点。
+- 每个会话只有一个 mount namespace 和一个 overlay 挂载（lower = 基础 checkout，upper/work 在会话目录），由常驻的 holder 进程持有；每次 `exec` 用 `nsenter`（util-linux）加入它，所以同一会话的并发 `exec` 看到的是同一个挂载。宿主和其他会话都看不到这个挂载，宿主上的 `/workspace/<repo>` 只是一个空的挂载点。
+- holder 的 pid 和 namespace 记在 `sessions/<id>/holder.json`。holder 意外退出时，如果还有命令在原 namespace 里运行就加入它，否则重新挂载（写入都在 upper 里，不会丢）；`drop` 时结束 holder。
 - 视图根目录默认 `/workspace`，可用 `TINGLY_FUSE_VIEW_ROOT` 覆盖（在 spawn 时生效，之后记录在会话元数据里）。
 - root 下只用 `CLONE_NEWNS`；非 root 时额外用 user namespace，把自己的 uid/gid 映射为自身，需要 Linux 5.11+ 且允许 unprivileged user namespace。非 root 用户需要先能创建挂载点：`sudo mkdir -p /workspace && sudo chown $USER /workspace`，或改用 `TINGLY_FUSE_VIEW_ROOT`。
 - 内核不支持时用 `--backend copy`。

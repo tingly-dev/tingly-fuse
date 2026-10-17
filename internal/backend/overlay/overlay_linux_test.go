@@ -3,12 +3,16 @@ package overlay_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
 	"github.com/tingly-dev/tingly-fuse/internal/backend/overlay"
@@ -51,6 +55,13 @@ func setup(t *testing.T) (*manager.Manager, string) {
 	if _, err := m.AddRepo(context.Background(), "demo", upstream); err != nil {
 		t.Fatal(err)
 	}
+	// Drop leftover sessions so their holders do not outlive the test.
+	t.Cleanup(func() {
+		sessions, _ := m.Sessions()
+		for _, s := range sessions {
+			m.Drop(context.Background(), s.ID)
+		}
+	})
 	return m, upstream
 }
 
@@ -185,5 +196,119 @@ func TestRemovePartial(t *testing.T) {
 	os.Chmod(filepath.Join(ws.StateDir, "work", "work"), 0)
 	if err := (overlay.Backend{}).Remove(context.Background(), ws); err != nil {
 		t.Fatalf("remove: %v", err)
+	}
+}
+
+// mountCount is the number of mounts at the view inside the session.
+func mountCount(t *testing.T, m *manager.Manager, id string) string {
+	t.Helper()
+	return execIn(t, m, id, "sh", "-c", `grep -c " $PWD " /proc/self/mountinfo`)
+}
+
+func holderPID(t *testing.T, m *manager.Manager, id string) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(m.Home, "sessions", id, "holder.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st struct{ PID int }
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatal(err)
+	}
+	return st.PID
+}
+
+func killAndWait(t *testing.T, pid int) {
+	t.Helper()
+	syscall.Kill(pid, syscall.SIGKILL)
+	for i := 0; i < 200; i++ {
+		if _, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/mnt", pid)); err != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("holder %d did not exit", pid)
+}
+
+// background starts argv in the session and returns a func that waits for
+// it and returns its output.
+func background(m *manager.Manager, id string, argv ...string) func() (string, error) {
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- m.Exec(context.Background(), id, argv, nil, &out, &out) }()
+	return func() (string, error) {
+		err := <-done
+		return strings.TrimSpace(out.String()), err
+	}
+}
+
+func TestConcurrentExecSharesOneMount(t *testing.T) {
+	m, _ := setup(t)
+	if _, err := m.Spawn(context.Background(), manager.SpawnOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
+		t.Fatal(err)
+	}
+	const wait = `i=0; while [ ! -f "$1" ]; do sleep 0.02; i=$((i+1)); [ $i -lt 500 ] || exit 3; done`
+	first := background(m, "s", "sh", "-c", `readlink /proc/self/ns/mnt > ns1; echo one > A; `+wait+`; cat B`, "sh", "B")
+	second := background(m, "s", "sh", "-c", wait+`; cat A; readlink /proc/self/ns/mnt > ns2; echo two > B`, "sh", "A")
+	if out, err := first(); err != nil || out != "two" {
+		t.Errorf("first exec: %q, %v", out, err)
+	}
+	if out, err := second(); err != nil || out != "one" {
+		t.Errorf("second exec: %q, %v", out, err)
+	}
+	if out := execIn(t, m, "s", "sh", "-c", "cmp ns1 ns2 && echo same"); out != "same" {
+		t.Errorf("execs ran in different mount namespaces: %s", out)
+	}
+	if n := mountCount(t, m, "s"); n != "1" {
+		t.Errorf("overlay mounts at the view = %s, want 1", n)
+	}
+}
+
+func TestHolderRecovery(t *testing.T) {
+	m, _ := setup(t)
+	if _, err := m.Spawn(context.Background(), manager.SpawnOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
+		t.Fatal(err)
+	}
+	execIn(t, m, "s", "sh", "-c", "echo kept > X")
+
+	// Holder gone and nothing else in its namespace: a new one is mounted
+	// over the same upper dir, so earlier writes are still there.
+	old := holderPID(t, m, "s")
+	killAndWait(t, old)
+	if got := execIn(t, m, "s", "cat", "X"); got != "kept" {
+		t.Errorf("after holder restart X = %q", got)
+	}
+	if pid := holderPID(t, m, "s"); pid == old {
+		t.Errorf("holder was not restarted")
+	}
+
+	// Holder gone while a command still runs in its namespace: join that
+	// namespace instead of mounting the upper dir a second time.
+	long := background(m, "s", "sh", "-c", `readlink /proc/self/ns/mnt > ns1; while [ ! -f STOP ]; do sleep 0.02; done`)
+	for i := 0; execIn(t, m, "s", "sh", "-c", "test -f ns1 && echo ok || true") != "ok"; i++ {
+		if i > 200 {
+			t.Fatal("long-running command did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	killAndWait(t, holderPID(t, m, "s"))
+	if out := execIn(t, m, "s", "sh", "-c", `readlink /proc/self/ns/mnt > ns2; cmp ns1 ns2 && echo same`); out != "same" {
+		t.Errorf("did not join the surviving namespace: %s", out)
+	}
+	if n := mountCount(t, m, "s"); n != "1" {
+		t.Errorf("overlay mounts at the view = %s, want 1", n)
+	}
+	execIn(t, m, "s", "touch", "STOP")
+	if _, err := long(); err != nil {
+		t.Errorf("long-running command: %v", err)
+	}
+
+	// Drop stops the holder.
+	pid := holderPID(t, m, "s")
+	if err := m.Drop(context.Background(), "s"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/mnt", pid)); err == nil {
+		t.Errorf("holder %d still running after drop", pid)
 	}
 }
