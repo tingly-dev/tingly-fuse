@@ -24,9 +24,11 @@ var validID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 type Session struct {
 	ID        string    `json:"id"`
 	Repo      string    `json:"repo"`
-	Base      string    `json:"base"`    // commit sha the view started from
-	Branch    string    `json:"branch"`  // branch created inside the view
-	Backend   string    `json:"backend"` // backend name
+	Base      string    `json:"base"`             // base id: a commit sha, or dir-<sha12>-<time> for a prepared directory
+	Head      string    `json:"head,omitempty"`   // commit the base is at, when Base is not itself a sha
+	Source    string    `json:"source,omitempty"` // directory the base was snapshotted from
+	Branch    string    `json:"branch"`           // branch created inside the view
+	Backend   string    `json:"backend"`          // backend name
 	ViewPath  string    `json:"view_path"`
 	CreatedAt time.Time `json:"created_at"`
 }

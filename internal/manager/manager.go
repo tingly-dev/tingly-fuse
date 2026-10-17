@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
@@ -84,6 +85,8 @@ func (m *Manager) Repos() ([]*repo.Repo, error) { return repo.List(m.Home) }
 type SpawnOptions struct {
 	Repo    string
 	From    string // revision to start from; default HEAD of the mirror
+	FromDir string // prepared checkout to snapshot as the base (instead of From)
+	Base    string // existing base id to reuse (instead of From or FromDir)
 	ID      string // optional; random when empty
 	Branch  string // optional; agent/<id> when empty
 	Backend string // optional; backend.Default when empty
@@ -100,13 +103,42 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 	if err != nil {
 		return nil, err
 	}
-	sha, err := r.Resolve(ctx, orDefault(opts.From, "HEAD"))
-	if err != nil {
-		return nil, err
+	n := 0
+	for _, set := range []bool{opts.From != "", opts.FromDir != "", opts.Base != ""} {
+		if set {
+			n++
+		}
 	}
-	baseDir, err := r.EnsureBase(ctx, sha)
-	if err != nil {
-		return nil, err
+	if n > 1 {
+		return nil, errors.New("--from, --from-dir and --base are mutually exclusive")
+	}
+	var sha, head, source, baseDir string
+	switch {
+	case opts.FromDir != "":
+		if sha, head, err = r.SnapshotDir(ctx, opts.FromDir); err != nil {
+			return nil, err
+		}
+		source, _ = filepath.Abs(opts.FromDir)
+		baseDir = r.BaseDir(sha)
+	case opts.Base != "":
+		sha = opts.Base
+		if strings.ContainsAny(sha, `/\`) || strings.HasPrefix(sha, ".") {
+			return nil, fmt.Errorf("invalid base id %q", sha)
+		}
+		baseDir = r.BaseDir(sha)
+		if _, err := os.Stat(baseDir); err != nil {
+			return nil, fmt.Errorf("repo %q has no base %q (see repo list -v)", r.Name, sha)
+		}
+		if h, herr := r.ReadHead(ctx, sha); herr == nil && h != sha {
+			head = h
+		}
+	default:
+		if sha, err = r.Resolve(ctx, orDefault(opts.From, "HEAD")); err != nil {
+			return nil, err
+		}
+		if baseDir, err = r.EnsureBase(ctx, sha); err != nil {
+			return nil, err
+		}
 	}
 
 	id := opts.ID
@@ -131,6 +163,8 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		ID:        id,
 		Repo:      r.Name,
 		Base:      sha,
+		Head:      head,
+		Source:    source,
 		Branch:    orDefault(opts.Branch, "agent/"+id),
 		Backend:   b.Name(),
 		ViewPath:  ws.ViewPath,

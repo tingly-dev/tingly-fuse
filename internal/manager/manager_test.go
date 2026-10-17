@@ -3,6 +3,7 @@ package manager_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -263,5 +264,133 @@ func TestRemoveRepo(t *testing.T) {
 	}
 	if err := m.RemoveRepo(ctx, "demo", false); err == nil {
 		t.Error("removing an unregistered repo should fail")
+	}
+}
+
+func TestSpawnFromDir(t *testing.T) {
+	m, upstream := setup(t)
+	ctx := context.Background()
+	tmp := t.TempDir()
+
+	// A prepared directory: a --shared clone (objects only through
+	// alternates), with an ignored build output, an unpushed commit and a
+	// staged-but-uncommitted file.
+	prep := filepath.Join(tmp, "prep")
+	git(t, tmp, "clone", "--quiet", "--shared", upstream, prep)
+	os.WriteFile(filepath.Join(prep, ".gitignore"), []byte("node_modules/\n"), 0o644)
+	git(t, prep, "add", ".")
+	git(t, prep, "commit", "--quiet", "-m", "local, unpushed")
+	os.MkdirAll(filepath.Join(prep, "node_modules", "dep"), 0o755)
+	os.WriteFile(filepath.Join(prep, "node_modules", "dep", "index.js"), []byte("installed\n"), 0o644)
+	os.WriteFile(filepath.Join(prep, "staged.txt"), []byte("staged\n"), 0o644)
+	git(t, prep, "add", "staged.txt")
+	head := git(t, prep, "rev-parse", "HEAD")
+
+	sess, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a", FromDir: prep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Head != head || sess.Source != prep || !strings.HasPrefix(sess.Base, "dir-"+head[:12]+"-") {
+		t.Errorf("session = %+v", sess)
+	}
+	if got := execIn(t, m, "a", "cat", "node_modules/dep/index.js"); got != "installed" {
+		t.Errorf("ignored file = %q", got)
+	}
+	if got := execIn(t, m, "a", "git", "log", "-1", "--format=%s"); got != "local, unpushed" {
+		t.Errorf("HEAD = %q", got)
+	}
+	if got := execIn(t, m, "a", "git", "show", ":staged.txt"); got != "staged" {
+		t.Errorf("staged blob = %q", got)
+	}
+	if got := execIn(t, m, "a", "git", "remote", "get-url", "origin"); got != upstream {
+		t.Errorf("origin = %q, want %q", got, upstream)
+	}
+
+	// The base holds no objects of its own; they live in the mirror.
+	base := filepath.Join(m.Home, "repos", "demo", "bases", sess.Base)
+	if p, _ := filepath.Glob(filepath.Join(base, ".git", "objects", "*", "*")); len(p) != 1 { // only info/alternates
+		t.Errorf("base has own objects: %v", p)
+	}
+
+	// Changing or deleting the source afterwards does not affect the session.
+	os.WriteFile(filepath.Join(prep, "node_modules", "dep", "index.js"), []byte("changed\n"), 0o644)
+	if err := os.RemoveAll(prep); err != nil {
+		t.Fatal(err)
+	}
+	if got := execIn(t, m, "a", "sh", "-c", "cat node_modules/dep/index.js && git fsck --no-progress 2>&1 | grep -c missing || true"); !strings.HasPrefix(got, "installed") || !strings.HasSuffix(got, "0") {
+		t.Errorf("after source removed: %q", got)
+	}
+
+	// A second session reuses the snapshot, and can push.
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "b", Base: sess.Base}); err != nil {
+		t.Fatal(err)
+	}
+	execIn(t, m, "b", "sh", "-c", "echo b > b.txt && git add b.txt && git commit -qm b")
+	if err := m.Push(ctx, "b", "", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "c", Base: "nope"}); err == nil {
+		t.Error("unknown base accepted")
+	}
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "d", Base: sess.Base, From: "main"}); err == nil {
+		t.Error("--base with --from accepted")
+	}
+}
+
+func TestSpawnFromDirWithSubmodule(t *testing.T) {
+	t.Setenv("GIT_AUTHOR_NAME", "test")
+	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "test")
+	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+	tmp := t.TempDir()
+	ctx := context.Background()
+
+	libSrc := filepath.Join(tmp, "lib-src")
+	git(t, tmp, "init", "--quiet", "--initial-branch=main", libSrc)
+	os.WriteFile(filepath.Join(libSrc, "lib.txt"), []byte("lib\n"), 0o644)
+	git(t, libSrc, "add", ".")
+	git(t, libSrc, "commit", "--quiet", "-m", "lib")
+	lib := filepath.Join(tmp, "lib.git")
+	git(t, tmp, "clone", "--quiet", "--bare", libSrc, lib)
+
+	src := filepath.Join(tmp, "app-src")
+	git(t, tmp, "init", "--quiet", "--initial-branch=main", src)
+	os.WriteFile(filepath.Join(src, "README.md"), []byte("app\n"), 0o644)
+	git(t, src, "add", ".")
+	git(t, src, "commit", "--quiet", "-m", "app")
+	git(t, src, "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", lib, "libs/lib")
+	git(t, src, "commit", "--quiet", "-m", "add lib")
+	upstream := filepath.Join(tmp, "upstream.git")
+	git(t, tmp, "clone", "--quiet", "--bare", src, upstream)
+
+	// src is itself the prepared directory; the submodule gitdir under
+	// .git/modules has its own objects.
+	m := manager.New(filepath.Join(tmp, "home"))
+	if _, err := m.AddRepo(ctx, "demo", upstream); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "s", FromDir: src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := execIn(t, m, "s", "cat", "libs/lib/lib.txt"); got != "lib" {
+		t.Errorf("submodule contents = %q", got)
+	}
+	if got := execIn(t, m, "s", "git", "-C", "libs/lib", "remote", "get-url", "origin"); got != lib {
+		t.Errorf("submodule origin = %q, want %q", got, lib)
+	}
+	base := filepath.Join(m.Home, "repos", "demo", "bases", sess.Base)
+	packs, _ := filepath.Glob(filepath.Join(base, ".git", "modules", "*", "objects", "pack", "*.pack"))
+	loose, _ := filepath.Glob(filepath.Join(base, ".git", "modules", "*", "objects", "??", "*"))
+	if len(packs)+len(loose) != 0 {
+		t.Errorf("base submodule has own objects: %v %v", packs, loose)
+	}
+	mirrors, _ := filepath.Glob(filepath.Join(m.Home, "repos", "demo", "modules", "*.git"))
+	if len(mirrors) != 1 {
+		t.Errorf("want 1 submodule mirror, got %v", mirrors)
+	}
+	// The seeded mirror still fetches from the real URL when asked for more.
+	if out, err := exec.Command("git", "-C", mirrors[0], "fsck", "--no-progress").CombinedOutput(); err != nil {
+		t.Errorf("mirror fsck: %v\n%s", err, out)
 	}
 }

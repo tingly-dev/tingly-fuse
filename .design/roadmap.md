@@ -15,12 +15,12 @@
 | 4. 子模块 | 递归检出子模块，对象走共享镜像（[0003](decisions/0003-shared-objects-via-alternates.md)） | tingly-box 在 overlay 会话里完整 `go build ./...` | ✅ |
 | 5. 仓库管理 | `repo remove`、`repo list -v`（PR #2） | 已合并 | ✅ |
 | 6. macOS clone 后端 | APFS clonefile，非 APFS 退回复制 | 2026-10-17 在 YZ 的 Mac 上验证：`list` 显示后端为 `clone`；base 已存在时 spawn 0.09 秒（第一次 13 秒，主要是检出 base 和子模块）；`df` 前后对比，新会话只多占约 2 MB（约 5.6k 个 inode），整份复制则约 75 MB；`go test -race ./...` 通过，包括 `TestCloneTreeNative` | ✅ |
+| 7. `spawn --from-dir` | 接收已准备好的目录作底层：reflink 快照、并入对象、处理 `.git` 与子模块、`--base` 复用（[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)，[issue #1](https://github.com/tingly-dev/tingly-fuse/issues/1)，范围见 [0004](decisions/0004-environment-prep-out-of-scope.md)） | 单元测试覆盖忽略文件、未推送提交、暂存 blob、alternates、子模块、源目录被删；2026-10-17 在真实 tingly-box（含 3 个子模块、frontend 640 MB node_modules）上验证：快照 7 秒；会话里直接跑 tsc 额外约 4 MB；固定 pnpm store 目录后 `pnpm install --frozen-lockfile` 1.2 秒、额外约 12 MB。不固定 store 时 pnpm 因 overlay 上设备号不同而改用项目内 store、要清掉 node_modules 重装，额外约 690 MB（见 [0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)） | ✅ |
 
 ## 进行中与待做
 
 | 步骤 | 范围 | 验收 | 状态 |
 |---|---|---|---|
-| 7. `spawn --from-dir` | 接收一个已准备好的目录作底层：只读快照、处理 `.git`、记录来源（[issue #1](https://github.com/tingly-dev/tingly-fuse/issues/1)，范围见 [0004](decisions/0004-environment-prep-out-of-scope.md)） | 拿 tingly-box 的就绪目录建底层，overlay 下 `pnpm install` 的额外占用接近 0 | ⬜ |
 
 ## 之后可能做的
 

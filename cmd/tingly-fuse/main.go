@@ -4,7 +4,7 @@
 //	tingly-fuse repo add <name> <upstream>
 //	tingly-fuse repo list [-v]
 //	tingly-fuse repo remove <name> [--force]
-//	tingly-fuse spawn <repo> [--from rev] [--id id] [--branch b] [--backend name]
+//	tingly-fuse spawn <repo> [--from rev | --from-dir dir | --base id] [--id id] [--branch b] [--backend name]
 //	tingly-fuse exec <session> -- <cmd> [args...]
 //	tingly-fuse push <session> [--remote origin]
 //	tingly-fuse drop <session>
@@ -163,6 +163,8 @@ func runSpawn(ctx context.Context, m *manager.Manager, args []string) error {
 	fs := flag.NewFlagSet("spawn", flag.ContinueOnError)
 	var opts manager.SpawnOptions
 	fs.StringVar(&opts.From, "from", "", "revision to start from (default: upstream HEAD)")
+	fs.StringVar(&opts.FromDir, "from-dir", "", "snapshot this prepared checkout (dependencies installed, built) as the base")
+	fs.StringVar(&opts.Base, "base", "", "reuse an existing base by id (see repo list -v), e.g. one made by --from-dir")
 	fs.StringVar(&opts.ID, "id", "", "session id (default: random)")
 	fs.StringVar(&opts.Branch, "branch", "", "branch to create (default: agent/<id>)")
 	fs.StringVar(&opts.Backend, "backend", "", fmt.Sprintf("view backend %v (default %q)", backend.Names(), backend.Default))
@@ -179,6 +181,9 @@ func runSpawn(ctx context.Context, m *manager.Manager, args []string) error {
 	}
 	fmt.Println(sess.ID)
 	fmt.Fprintf(os.Stderr, "view: %s\nbranch: %s\nbase: %s\n", sess.ViewPath, sess.Branch, sess.Base)
+	if sess.Source != "" {
+		fmt.Fprintf(os.Stderr, "source: %s\n", sess.Source)
+	}
 	return nil
 }
 
@@ -209,7 +214,15 @@ func runList(m *manager.Manager) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tREPO\tBRANCH\tBASE\tBACKEND\tVIEW")
 	for _, s := range sessions {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Repo, s.Branch, s.Base[:12], s.Backend, s.ViewPath)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Repo, s.Branch, shortBase(s.Base), s.Backend, s.ViewPath)
 	}
 	return w.Flush()
+}
+
+// shortBase abbreviates a commit sha; directory base ids are already short.
+func shortBase(b string) string {
+	if len(b) == 40 {
+		return b[:12]
+	}
+	return b
 }
