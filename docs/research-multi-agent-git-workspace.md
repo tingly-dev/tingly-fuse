@@ -279,7 +279,7 @@ main 前进后，agent 的 base 需要更新。由于 delta 只记录改动文�
 
 ### 阶段 1：tingly-fuse MVP（Linux only）
 
-- FUSE 守护进程，底层 = git tree（libgit2/gitoxide 读对象），上层 = 每 session 一个差量目录；
+- FUSE 守护进程，底层 = git tree（读 git 对象），上层 = 每 session 一个差量目录（技术栈见第 7 节第 5 条，已定为 Go）；
 - 每 session 一个轻 gitdir，实现 fsmonitor hook；
 - 文件系统 checkpoint（冻结层）+ 回滚；
 - 依赖层仍可先用 overlayfs/reflink，不急着全进 FUSE。
@@ -330,7 +330,7 @@ main 前进后，agent 的 base 需要更新。由于 delta 只记录改动文�
 2. **典型仓库规模？** 文件数和体积决定懒加载的收益有多大，也决定阶段 0 是否已经够用。
 3. **是否需要先做阶段 0 基线？**（建议：做，用数据决定 FUSE 投入）
 4. **冲突策略偏好？** 只告警、软锁、还是协调者自动合并？
-5. **实现语言？** Rust（gitoxide + fuser，性能和内存安全）或 Go（go-fuse + go-git，开发快）。（建议：Rust）
+5. **实现语言？** 已定（2026-10-17）：**Go**。tingly-box 也是 Go，可以同生态发布；第一阶段用内核 overlayfs 和 APFS clonefile，不需要 FUSE，Rust 的性能优势用不上；git 操作直接调用 git 命令行；以后上 FUSE 用 go-fuse，性能不够再单独用 Rust 写守护进程。
 
 ---
 
