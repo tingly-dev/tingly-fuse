@@ -231,3 +231,37 @@ func TestSpawnChecksOutSubmodules(t *testing.T) {
 		t.Errorf("want 2 submodule mirrors (lib, nested), got %v", mirrors)
 	}
 }
+
+func TestRemoveRepo(t *testing.T) {
+	m, _ := setup(t)
+	ctx := context.Background()
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RemoveRepo(ctx, "demo", false); err == nil || !strings.Contains(err.Error(), "a") {
+		t.Fatalf("remove with live session: err = %v, want refusal naming the session", err)
+	}
+	repos, _ := m.Repos()
+	if len(repos) != 1 {
+		t.Fatalf("refused remove still deleted the repo: %v", repos)
+	}
+	if b, _ := repos[0].Bases(); len(b) != 1 {
+		t.Fatalf("bases = %v, want one", b)
+	}
+
+	if err := m.RemoveRepo(ctx, "demo", true); err != nil {
+		t.Fatal(err)
+	}
+	if repos, _ := m.Repos(); len(repos) != 0 {
+		t.Errorf("repos after remove = %v", repos)
+	}
+	if sessions, _ := m.Sessions(); len(sessions) != 0 {
+		t.Errorf("sessions after forced remove = %v", sessions)
+	}
+	if _, err := os.Stat(filepath.Join(m.Home, "repos", "demo")); !os.IsNotExist(err) {
+		t.Errorf("repo dir survived: %v", err)
+	}
+	if err := m.RemoveRepo(ctx, "demo", false); err == nil {
+		t.Error("removing an unregistered repo should fail")
+	}
+}

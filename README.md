@@ -15,6 +15,8 @@ tingly-fuse exec "$id" -- claude                   # 在视图里启动 agent
 tingly-fuse push "$id"                             # 推送分支 agent/<id>
 tingly-fuse drop "$id"
 tingly-fuse list
+tingly-fuse repo list -v                           # 带会话数和 base 数
+tingly-fuse repo remove tingly-box --force         # 删除镜像和所有 base；--force 先 drop 它的会话
 ```
 
 视图内运行的每个进程都会拿到 `TINGLY_WORKSPACE`（视图路径）、`TINGLY_SESSION`、`TINGLY_REPO` 三个环境变量。脚本和配置应读 `TINGLY_WORKSPACE`，不要写死路径：macOS 的 `clone` 后端每个会话的视图路径都不同。

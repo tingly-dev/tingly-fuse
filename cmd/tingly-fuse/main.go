@@ -2,7 +2,8 @@
 // git repository.
 //
 //	tingly-fuse repo add <name> <upstream>
-//	tingly-fuse repo list
+//	tingly-fuse repo list [-v]
+//	tingly-fuse repo remove <name> [--force]
 //	tingly-fuse spawn <repo> [--from rev] [--id id] [--branch b] [--backend name]
 //	tingly-fuse exec <session> -- <cmd> [args...]
 //	tingly-fuse push <session> [--remote origin]
@@ -29,7 +30,8 @@ import (
 
 const usage = `usage:
   tingly-fuse repo add <name> <upstream>   register a repository
-  tingly-fuse repo list                    list registered repositories
+  tingly-fuse repo list [-v]               list registered repositories (-v: session and base counts)
+  tingly-fuse repo remove <name> [--force] delete a repository (--force drops its sessions)
   tingly-fuse spawn <repo> [flags]         create a session and print its id
   tingly-fuse exec <session> -- <cmd>...   run a command inside a session's view
   tingly-fuse push <session> [flags]       push the session's branch
@@ -103,20 +105,58 @@ func runRepo(ctx context.Context, m *manager.Manager, args []string) error {
 		}
 		fmt.Println(r.Name)
 		return nil
-	case len(args) == 1 && args[0] == "list":
-		repos, err := m.Repos()
-		if err != nil {
+	case len(args) >= 1 && args[0] == "list":
+		fs := flag.NewFlagSet("repo list", flag.ContinueOnError)
+		verbose := fs.Bool("v", false, "also show session and base counts")
+		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		return runRepoList(m, *verbose)
+	case len(args) >= 2 && args[0] == "remove":
+		fs := flag.NewFlagSet("repo remove", flag.ContinueOnError)
+		force := fs.Bool("force", false, "drop the repository's sessions first (unpushed work is lost)")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("usage: tingly-fuse repo remove <name> [--force]")
+		}
+		return m.RemoveRepo(ctx, args[1], *force)
+	default:
+		return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> | repo list [-v] | repo remove <name> [--force]")
+	}
+}
+
+func runRepoList(m *manager.Manager, verbose bool) error {
+	repos, err := m.Repos()
+	if err != nil {
+		return err
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	if !verbose {
 		fmt.Fprintln(w, "NAME\tUPSTREAM")
 		for _, r := range repos {
 			fmt.Fprintf(w, "%s\t%s\n", r.Name, r.Upstream)
 		}
 		return w.Flush()
-	default:
-		return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> | repo list")
 	}
+	sessions, err := m.Sessions()
+	if err != nil {
+		return err
+	}
+	perRepo := map[string]int{}
+	for _, s := range sessions {
+		perRepo[s.Repo]++
+	}
+	fmt.Fprintln(w, "NAME\tSESSIONS\tBASES\tUPSTREAM")
+	for _, r := range repos {
+		bases, err := r.Bases()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", r.Name, perRepo[r.Name], len(bases), r.Upstream)
+	}
+	return w.Flush()
 }
 
 func runSpawn(ctx context.Context, m *manager.Manager, args []string) error {
