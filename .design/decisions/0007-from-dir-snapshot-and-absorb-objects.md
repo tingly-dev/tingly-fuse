@@ -31,3 +31,8 @@
 - 并入镜像的对象不会自动清理，`repo remove` 才会一并删除。
 - 每次 `--from-dir` 都生成新 base，旧快照不会自动删除。
 - 镜像里可能因此含有上游没有的对象（未推送提交、暂存的 blob），不影响 `fetch`。
+- **pnpm 的 store 路径要固定。** 在 overlay 视图里 pnpm 发现项目和全局 store 不在同一设备上，会改用项目内的 `.pnpm-store`，与 `node_modules/.modules.yaml` 记录的不符，于是要清掉 node_modules 重装（无 TTY 时直接报 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`，`CI=true` 则真的重装，tingly-box 上额外约 690 MB）。准备环境时记下 store 目录，会话里设 `npm_config_store_dir` 指向同一个目录即可：`pnpm install` 1.2 秒、额外约 12 MB。这是环境侧的约定（[0004](0004-environment-prep-out-of-scope.md)），tingly-fuse 不改写用户的 pnpm 配置。
+
+## 验证（2026-10-17，Linux overlay）
+
+tingly-box（3 个子模块）+ frontend 的 `pnpm install` 后目录：`--from-dir` 快照 7 秒；会话视图额外占用 2.7 MB；会话里直接跑 `tsc`、`git status` 正常；第二个会话用 `--base` 复用同一快照。

@@ -26,7 +26,7 @@ id=$(tingly-fuse spawn tingly-box --from-dir ~/src/tingly-box)   # 快照该目�
 tingly-fuse spawn tingly-box --base dir-…                        # 复用同一份快照（id 见 repo list -v），不再复制
 ```
 
-`--from-dir` 用 reflink 复制，之后源目录怎么改都不影响已有会话；目录里未推送的提交、已暂存的文件和子模块对象会并入共享镜像。要求目录的 `.git` 是目录（不支持 worktree）。细节见 [决策 0007](.design/decisions/0007-from-dir-snapshot-and-absorb-objects.md)。
+`--from-dir` 用 reflink 复制，之后源目录怎么改都不影响已有会话；目录里未推送的提交、已暂存的文件和子模块对象会并入共享镜像。要求目录的 `.git` 是目录（不支持 worktree）。pnpm 项目注意：在 overlay 视图里 pnpm 会因设备号不同改用项目内 store 而重装，会话里设 `npm_config_store_dir` 指向准备环境时用的 store 目录即可（tingly-box 上 `pnpm install` 1.2 秒、额外约 12 MB，否则约 690 MB）。细节见 [决策 0007](.design/decisions/0007-from-dir-snapshot-and-absorb-objects.md)。
 
 视图内运行的每个进程都会拿到 `TINGLY_WORKSPACE`（视图路径）、`TINGLY_SESSION`、`TINGLY_REPO` 三个环境变量。脚本和配置应读 `TINGLY_WORKSPACE`，不要写死路径：macOS 的 `clone` 后端每个会话的视图路径都不同。
 
