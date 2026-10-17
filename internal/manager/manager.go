@@ -50,6 +50,34 @@ func (m *Manager) AddRepo(ctx context.Context, name, upstream string) (*repo.Rep
 	return repo.Add(ctx, m.Home, name, upstream)
 }
 
+// RemoveRepo unregisters a repository and deletes its mirror and bases.
+// It refuses while sessions still use the repository unless force is set,
+// in which case those sessions are dropped first (unpushed work is lost).
+func (m *Manager) RemoveRepo(ctx context.Context, name string, force bool) error {
+	if _, err := repo.Open(m.Home, name); err != nil {
+		return err
+	}
+	sessions, err := m.sessions.List()
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for _, s := range sessions {
+		if s.Repo == name {
+			ids = append(ids, s.ID)
+		}
+	}
+	if len(ids) > 0 && !force {
+		return fmt.Errorf("repo %q still has sessions %v; drop them or use --force", name, ids)
+	}
+	for _, id := range ids {
+		if err := m.Drop(ctx, id); err != nil {
+			return fmt.Errorf("drop session %s: %w", id, err)
+		}
+	}
+	return repo.Remove(m.Home, name)
+}
+
 // Repos lists registered repositories.
 func (m *Manager) Repos() ([]*repo.Repo, error) { return repo.List(m.Home) }
 

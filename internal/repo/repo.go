@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/tingly-dev/tingly-fuse/internal/gitx"
 )
@@ -108,6 +109,37 @@ func List(home string) ([]*Repo, error) {
 			continue
 		}
 		out = append(out, r)
+	}
+	return out, nil
+}
+
+// Remove deletes a registered repository: its object store, submodule
+// mirrors and every base checkout. Callers must drop sessions first; a view
+// layered on a removed base stops working.
+func Remove(home, name string) error {
+	if !validName.MatchString(name) {
+		return fmt.Errorf("invalid repo name %q", name)
+	}
+	r, err := Open(home, name)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(r.dir)
+}
+
+// Bases lists the commits that have a base checkout.
+func (r *Repo) Bases() ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(r.dir, "bases"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".tmp-") {
+			out = append(out, e.Name())
+		}
 	}
 	return out, nil
 }
