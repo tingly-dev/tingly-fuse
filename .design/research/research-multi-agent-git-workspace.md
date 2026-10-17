@@ -1,6 +1,8 @@
 # 多 Agent 共享一个 Git 仓库：行业方案调研与 tingly-fuse 设计思路
 
 > 状态：调研 / 设计草案（不含实现）　日期：2026-10-17
+>
+> 这是前期调研，作为背景留存。后来实际做出的决定见 [../decisions/](../decisions/)，当前架构见 [../architecture.md](../architecture.md)，进度见 [../roadmap.md](../roadmap.md)；两者有出入时以那里为准（例如实现语言已定为 Go）。
 
 ## 0. 结论先行
 

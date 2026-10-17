@@ -2,7 +2,7 @@
 
 让多个 agent 共用一个 git 仓库：每个 agent 拿到一个私有的、写时复制的工作区视图，从某个 commit 开始，只堆叠自己的分支，最后推到远端。不需要为每个 agent 开 worktree，也不需要容器编排。
 
-设计背景见 [docs/research-multi-agent-git-workspace.md](docs/research-multi-agent-git-workspace.md)。
+设计记录在 [.design/](.design/)：[架构](.design/architecture.md)、[路线图](.design/roadmap.md)、[决策记录](.design/decisions/)和[前期调研](.design/research/research-multi-agent-git-workspace.md)。改动设计时请同步更新那里。
 
 ## 用法
 
