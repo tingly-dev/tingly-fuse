@@ -22,6 +22,7 @@ import (
 
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
 	_ "github.com/tingly-dev/tingly-fuse/internal/backend/fullcopy"
+	_ "github.com/tingly-dev/tingly-fuse/internal/backend/overlay"
 	"github.com/tingly-dev/tingly-fuse/internal/manager"
 )
 
