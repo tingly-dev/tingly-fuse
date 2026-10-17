@@ -17,7 +17,7 @@ tingly-fuse drop "$id"
 tingly-fuse list
 ```
 
-视图内运行的每个进程都会拿到 `TINGLY_WORKSPACE`（视图路径）、`TINGLY_SESSION`、`TINGLY_REPO` 三个环境变量。脚本和配置应读 `TINGLY_WORKSPACE`，不要写死路径。
+视图内运行的每个进程都会拿到 `TINGLY_WORKSPACE`（视图路径）、`TINGLY_SESSION`、`TINGLY_REPO` 三个环境变量。脚本和配置应读 `TINGLY_WORKSPACE`，不要写死路径：macOS 的 `clone` 后端每个会话的视图路径都不同。
 
 状态目录默认是 `~/.tingly-fuse`，可用 `TINGLY_FUSE_HOME` 覆盖：
 
@@ -36,7 +36,7 @@ sessions/<id>/...           后端私有状态
 |---|---|---|---|
 | `copy` | 全平台 | `sessions/<id>/root`，每会话不同 | ✅ 基准实现：整份复制基础 checkout |
 | `overlay` | Linux | 固定路径（如 `/workspace/<repo>`），所有会话相同 | 待实现：mount namespace + overlayfs |
-| `clone` | macOS | 每会话不同 | 待实现：APFS clonefile |
+| `clone` | macOS（默认） | `sessions/<id>/root`，每会话不同 | ✅ APFS clonefile 写时复制；非 APFS 卷自动退回整份复制 |
 
 实现新后端的约定：
 
