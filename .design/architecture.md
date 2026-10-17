@@ -55,7 +55,7 @@ sessions/<id>/...               后端私有状态（overlay 的 upper/work、ho
 
 - macOS 没有 mount namespace，做不到同一路径；需要严格一致时的备选是用一个常驻的轻量 Linux 虚拟机，尚未实现。
 - `overlay` 依赖 `nsenter`（util-linux）；非 root 需要 Linux 5.11+ 且允许非特权 user namespace。
-- `clone` 后端已在真实的 Mac 上验证过克隆生效（spawn 0.09 秒、新会话约 2 MB），但 `TestCloneTreeNative` 的结果还没拿到。注意 `du` 会把克隆和 base 共享的数据块重复计入，要看真实占用只能比较 `df` 前后的差值。
+- `clone` 后端已在真实的 Mac 上验证：克隆生效（spawn 0.09 秒、新会话约 2 MB），`go test -race ./...` 通过。注意 `du` 会把克隆和 base 共享的数据块重复计入，要看真实占用只能比较 `df` 前后的差值。
 - pnpm 在 overlay 下无法跨挂载点硬链接，依赖会整份复制；解决办法是让底层本来就带着装好的依赖，这属于环境准备，见 [0004](decisions/0004-environment-prep-out-of-scope.md) 和 roadmap 中的 issue #1。
 
 ## 尚未实现、仅在调研中的方向

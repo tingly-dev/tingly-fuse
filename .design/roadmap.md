@@ -14,12 +14,12 @@
 | 3. 基准测试 | worktree / copy / reflink / overlay 在 tingly-box 上的创建、依赖安装、`go build`、`git status`、占用 | 报告和脚本在 [../bench/](../bench/) | ✅ |
 | 4. 子模块 | 递归检出子模块，对象走共享镜像（[0003](decisions/0003-shared-objects-via-alternates.md)） | tingly-box 在 overlay 会话里完整 `go build ./...` | ✅ |
 | 5. 仓库管理 | `repo remove`、`repo list -v`（PR #2） | 已合并 | ✅ |
+| 6. macOS clone 后端 | APFS clonefile，非 APFS 退回复制 | 2026-10-17 在 YZ 的 Mac 上验证：`list` 显示后端为 `clone`；base 已存在时 spawn 0.09 秒（第一次 13 秒，主要是检出 base 和子模块）；`df` 前后对比，新会话只多占约 2 MB（约 5.6k 个 inode），整份复制则约 75 MB；`go test -race ./...` 通过，包括 `TestCloneTreeNative` | ✅ |
 
-## 进行中与待验证
+## 进行中与待做
 
 | 步骤 | 范围 | 验收 | 状态 |
 |---|---|---|---|
-| 6. macOS clone 后端真机验证 | 后端已合入（APFS clonefile，非 APFS 退回复制）。2026-10-17 已在 YZ 的 Mac 上跑过：`list` 的后端显示 `clone`；base 已存在时 spawn 只要 0.09 秒（第一次 13 秒，主要花在检出 base 和子模块上）；用 `df` 前后对比，新会话只多占约 2 MB（2160 KB，约 5.6k 个 inode），整份复制则约 75 MB | 还差 `go test -race ./...` 的结果，重点是 `TestCloneTreeNative`（确认临时卷真的在克隆，而不是走了复制）。其余已验证，不用再重复跑 | 🔶 只差测试结果 |
 | 7. `spawn --from-dir` | 接收一个已准备好的目录作底层：只读快照、处理 `.git`、记录来源（[issue #1](https://github.com/tingly-dev/tingly-fuse/issues/1)，范围见 [0004](decisions/0004-environment-prep-out-of-scope.md)） | 拿 tingly-box 的就绪目录建底层，overlay 下 `pnpm install` 的额外占用接近 0 | ⬜ |
 
 ## 之后可能做的
