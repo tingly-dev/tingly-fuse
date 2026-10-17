@@ -20,6 +20,7 @@ repos/<name>/repo.json          登记信息（upstream）
 repos/<name>/objects.git        bare 镜像，所有 git 对象只存在这里
 repos/<name>/modules/<h>.git    子模块的 bare 镜像，按 URL 哈希，跨 base 共用
 repos/<name>/bases/<sha>/       某个 commit 的只读基础 checkout
+repos/<name>/bases/dir-<sha12>-<t>/  由 spawn --from-dir 从现成目录快照出的基础 checkout
 sessions/<id>/session.json      会话元数据（repo、base、分支、后端、视图路径）
 sessions/<id>/...               后端私有状态（overlay 的 upper/work、holder.json 等）
 ```
@@ -31,7 +32,7 @@ sessions/<id>/...               后端私有状态（overlay 的 upper/work、ho
 | 命令 | 做什么 |
 |---|---|
 | `repo add/list/remove` | 登记仓库并建镜像；列出（`-v` 带会话数和 base 数）；删除（`--force` 先 drop 它的会话） |
-| `spawn <repo> [--from rev]` | 解析 rev 得到 commit；确保该 commit 的 base 存在（并发安全，先建临时目录再 rename）；预留会话 id；后端 `Create` 出视图；在视图里建分支 `agent/<id>` |
+| `spawn <repo> [--from rev \| --from-dir dir \| --base id]` | `--from-dir`：reflink 快照该目录并把其中对象并入镜像（[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)）；`--base`：复用已有 base；默认：解析 rev 得到 commit；确保该 commit 的 base 存在（并发安全，先建临时目录再 rename）；预留会话 id；后端 `Create` 出视图；在视图里建分支 `agent/<id>` |
 | `exec <session> -- cmd...` | 在会话视图里运行命令，注入 `TINGLY_WORKSPACE`、`TINGLY_SESSION`、`TINGLY_REPO` |
 | `push <session>` | 在视图里把分支推到真实的 upstream（base 的 origin 指向 upstream，不是本地镜像） |
 | `drop <session>` | 后端 `Remove` 并删除会话目录，未推送的工作随之丢失 |
@@ -56,7 +57,7 @@ sessions/<id>/...               后端私有状态（overlay 的 upper/work、ho
 - macOS 没有 mount namespace，做不到同一路径；需要严格一致时的备选是用一个常驻的轻量 Linux 虚拟机，尚未实现。
 - `overlay` 依赖 `nsenter`（util-linux）；非 root 需要 Linux 5.11+ 且允许非特权 user namespace。
 - `clone` 后端已在真实的 Mac 上验证：克隆生效（spawn 0.09 秒、新会话约 2 MB），`go test -race ./...` 通过。注意 `du` 会把克隆和 base 共享的数据块重复计入，要看真实占用只能比较 `df` 前后的差值。
-- pnpm 在 overlay 下无法跨挂载点硬链接，依赖会整份复制；解决办法是让底层本来就带着装好的依赖，这属于环境准备，见 [0004](decisions/0004-environment-prep-out-of-scope.md) 和 roadmap 中的 issue #1。
+- pnpm 在 overlay 下无法跨挂载点硬链接，依赖会整份复制；解决办法是让底层本来就带着装好的依赖：环境准备在 tingly-fuse 之前完成，再用 `spawn --from-dir` 把这个目录当底层（[0004](decisions/0004-environment-prep-out-of-scope.md)、[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)）。`--from-dir` 要求 `.git` 是目录，不支持 worktree。
 
 ## 尚未实现、仅在调研中的方向
 

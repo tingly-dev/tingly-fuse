@@ -20,7 +20,7 @@
 
 | 步骤 | 范围 | 验收 | 状态 |
 |---|---|---|---|
-| 7. `spawn --from-dir` | 接收一个已准备好的目录作底层：只读快照、处理 `.git`、记录来源（[issue #1](https://github.com/tingly-dev/tingly-fuse/issues/1)，范围见 [0004](decisions/0004-environment-prep-out-of-scope.md)） | 拿 tingly-box 的就绪目录建底层，overlay 下 `pnpm install` 的额外占用接近 0 | ⬜ |
+| 7. `spawn --from-dir` | 接收已准备好的目录作底层：reflink 快照、并入对象、处理 `.git` 与子模块、`--base` 复用（[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)，[issue #1](https://github.com/tingly-dev/tingly-fuse/issues/1)，范围见 [0004](decisions/0004-environment-prep-out-of-scope.md)） | 单元测试覆盖忽略文件、未推送提交、暂存 blob、alternates、子模块、源目录被删；待在 tingly-box 就绪目录上验证 overlay 下 `pnpm install` 的额外占用接近 0 | 🔶 |
 
 ## 之后可能做的
 
