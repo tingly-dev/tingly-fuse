@@ -160,6 +160,41 @@ NFS 这类方案提供的是"共享同一个存储"，而不是"共享同一个�
 
 因此后端协议（FUSE 或 NFS）是可替换的实现细节，对外契约是"**同一路径 + 按会话、按目录可配置的 IO 路由**"。Linux 容器场景可优先考虑 NFS 导出，避免容器内 FUSE 的权限问题；需要更细的控制（passthrough、精确的变更通知）时再用 FUSE。
 
+### 4.0.1 "同一路径、不同视图"的机制
+
+路径本身只是一个名字，内核解析路径时查的是**当前进程所在的挂载表**。Linux 上每个进程属于一个 mount namespace，不同 namespace 可以有不同的挂载表。于是同一个字符串 `/workspace/tingly-box`，在 agent A 的进程里解析到 overlay A，在 agent B 的进程里解析到 overlay B。agent 自己完全不感知，它只是 `cd` 进去干活。
+
+启动流程（这就是 Docker 底层做的事，去掉了镜像、网络、cgroup）：
+
+1. 启动器为 agent 创建新的 mount namespace（`unshare -m`，或 bubblewrap）；
+2. 在这个 namespace 里把 `lower=共享底层, upper=该 agent 的差量目录` 挂到 `/workspace/tingly-box`；
+3. 在这个 namespace 里 exec agent 进程（Claude Code 等）。
+
+agent 之后启动的所有子进程（`go build`、`pnpm`、`git`）都继承这个 namespace，看到的都是同一个视图。可运行的演示见 [demo-same-path-overlay.sh](demo-same-path-overlay.sh)。
+
+**演示中发现的坑：** 如果把 `.git/objects` 也放在 overlay 底层，git 在查询对象时会刷新 pack 文件的 mtime，这会触发 overlay 把整个 pack（tingly-box 约 19MB）复制到差量层。解决办法是把对象库移出 overlay，用 `objects/info/alternates` 指向共享存储。修正后每个 agent 的差量层只有约 0.45MB，几乎全是 index 文件。
+
+### 4.0.2 macOS
+
+macOS 没有 mount namespace，无法在不借助虚拟机的情况下让不同进程在同一路径看到不同内容（单挂载点按 pid 区分的方式在 macOS 的 NFS 后端里拿不到调用者信息，也不可行）。可选路线：
+
+| 路线 | 做法 | 路径一致 | 代价 |
+|---|---|---|---|
+| APFS clonefile | `cp -c` 或 `clonefile()` 克隆整个 checkout，文件级写时复制 | ❌ 每个 agent 一个路径 | 对 tingly-box 这种规模（约 3200 个文件）几乎瞬间完成，是 macOS 上最便宜的 overlay 替代品 |
+| 轻量 Linux 虚拟机 | OrbStack、Lima、Apple 的 container 工具等，agent 跑在 VM 里，沿用 Linux 方案 | ✅ | 需要维护一个 VM，但不需要容器编排 |
+| macFUSE / FUSE-T / 本地 NFS | 每个 agent 一个挂载点 | ❌ | 实现成本高，收益不如 clonefile |
+
+建议：Linux 用 mount namespace + overlay；macOS 本机先用 APFS clonefile，不同路径带来的缓存问题用 `-trimpath` 等手段缓解；需要严格一致时再上 Linux VM。tingly-fuse 对外提供同一套 `spawn / push / drop` 接口，后端按平台选择。
+
+### 4.0.3 以 tingly-box 为例
+
+tingly-box 是 Go 后端 + pnpm 前端，约 3200 个被跟踪文件，源码 44MB，git pack 19MB。对这个规模：
+
+- 拷贝源码本身不是瓶颈，worktree 的成本主要在 `frontend/` 的 pnpm 依赖安装和前端、Go 的首次构建；
+- pnpm 已经用全局内容寻址存储加硬链接，Go 的模块缓存和构建缓存也是全局的，这些天然可以跨 agent 共享；
+- 路径一致对 Go 有实际好处：不加 `-trimpath` 时，源码绝对路径会影响构建缓存是否命中，路径不同的 worktree 更容易重新编译；
+- 因此 overlay 对这个仓库的主要价值是：依赖层（`node_modules`、前端构建产物）作为共享底层预热一次，所有 agent 直接复用，加上路径一致带来的缓存命中。
+
 ### 4.1 底层用 git tree，而不是物化目录
 
 overlayfs/AgentFS 的底层是"磁盘上的真实目录"，意味着每个不同的 base commit 都要物化一次。如果底层直接是 git tree：
