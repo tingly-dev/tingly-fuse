@@ -431,3 +431,83 @@ func testPruneDoesNotRaceSpawn(t *testing.T) {
 		fsckView(t, m, s.ID)
 	}
 }
+
+// A base that already lost objects must not be pinned in a way that keeps
+// gc from ever running in the mirror again; check reports it instead.
+func TestPinningSkipsMissingObjects(t *testing.T) {
+	m, upstream := setup(t)
+	ctx := context.Background()
+	prep := filepath.Join(t.TempDir(), "prep")
+	git(t, filepath.Dir(prep), "clone", "--quiet", upstream, prep)
+	os.WriteFile(filepath.Join(prep, "staged.txt"), []byte("lost\n"), 0o644)
+	git(t, prep, "add", "staged.txt")
+	blob := git(t, prep, "rev-parse", ":staged.txt")
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a", FromDir: prep}); err != nil {
+		t.Fatal(err)
+	}
+	mirror := mirrors(t, m, "demo")[0]
+	// Simulate a base made before pinning whose staged blob gc took.
+	for _, ref := range strings.Fields(git(t, mirror, "for-each-ref", "--format=%(refname)", "refs/tingly/")) {
+		git(t, mirror, "update-ref", "-d", ref)
+	}
+	if err := os.Remove(filepath.Join(mirror, "objects", blob[:2], blob[2:])); err != nil {
+		t.Fatal(err)
+	}
+	health, err := m.CheckRepo(ctx, "demo", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(health) != 1 || !health[0].Pinned || health[0].Err == nil {
+		t.Fatalf("health = %+v, want pinned and the missing blob reported", health)
+	}
+	git(t, mirror, "-c", "gc.pruneExpire=now", "gc", "--quiet", "--prune=now")
+}
+
+// Many sessions started at once, each fetching first, must all succeed.
+func TestConcurrentSpawnsFetchSafely(t *testing.T) {
+	m, upstream := setup(t)
+	ctx := context.Background()
+	next := commitTo(t, upstream, "main", "next.txt", "next\n", false)
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = m.Spawn(ctx, manager.SpawnOptions{Repo: "demo"})
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("spawn %d: %v", i, err)
+		}
+	}
+	sessions, _ := m.Sessions()
+	for _, s := range sessions {
+		if s.Base != next {
+			t.Errorf("session %s on %s, want %s", s.ID, s.Base, next)
+		}
+	}
+}
+
+// A session whose metadata cannot be read still counts as using a base:
+// removal must refuse rather than guess.
+func TestPruneRefusesWithUnreadableSession(t *testing.T) {
+	m, _ := setup(t)
+	ctx := context.Background()
+	s, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(m.Home, "sessions", "a", "session.json"), []byte("{truncated"), 0o644)
+	if pruned, err := m.PruneBases(ctx, "demo", false); err == nil || len(pruned) != 0 {
+		t.Errorf("prune with an unreadable session: pruned %v, err %v", pruned, err)
+	}
+	if err := m.RemoveBase(ctx, "demo", s.Base); err == nil {
+		t.Error("rm with an unreadable session succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(m.Home, "repos", "demo", "bases", s.Base)); err != nil {
+		t.Errorf("base deleted: %v", err)
+	}
+}

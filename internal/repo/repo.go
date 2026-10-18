@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/tingly-dev/tingly-fuse/internal/gitx"
 )
@@ -145,9 +146,10 @@ func (r *Repo) Bases() ([]string, error) {
 }
 
 // Fetch updates the object store from upstream.
+// Concurrent calls share one fetch: a call that waited on another one
+// started after it does not fetch again.
 func (r *Repo) Fetch(ctx context.Context) error {
-	_, err := gitx.Run(ctx, r.ObjectsDir(), "fetch", "--quiet", "--prune", "origin")
-	return err
+	return fetchMirror(ctx, r.ObjectsDir(), time.Now())
 }
 
 var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)

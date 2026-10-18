@@ -110,21 +110,37 @@ func (r *Repo) ensureModuleMirror(ctx context.Context, url, want string) (string
 			}
 		}
 	}
-	if _, err := gitx.Run(ctx, mirror, "cat-file", "-e", want+"^{commit}"); err == nil {
+	has := func() bool {
+		_, err := gitx.Run(ctx, mirror, "cat-file", "-e", want+"^{commit}")
+		return err == nil
+	}
+	if has() {
 		return mirror, nil
 	}
-	if err := setModuleRefspec(ctx, mirror); err != nil {
-		return "", err
-	}
-	if _, err := gitx.Run(ctx, mirror, "fetch", "--quiet", "--prune", "origin"); err != nil {
-		return "", err
-	}
-	if _, err := gitx.Run(ctx, mirror, "cat-file", "-e", want+"^{commit}"); err != nil {
+	// One fetch at a time per mirror; a spawn that waited may find the
+	// commit already fetched.
+	err := withMirrorLock(mirror, func() error {
+		if has() {
+			return nil
+		}
+		if err := setModuleRefspec(ctx, mirror); err != nil {
+			return err
+		}
+		if _, err := gitx.Run(ctx, mirror, "fetch", "--quiet", "--prune", "origin"); err != nil {
+			return err
+		}
+		if has() {
+			return nil
+		}
 		// Commits not on any branch (e.g. a force-pushed-away pin) can still
 		// be fetched by id from servers that allow it.
-		if _, ferr := gitx.Run(ctx, mirror, "fetch", "--quiet", "origin", want); ferr != nil {
-			return "", fmt.Errorf("commit %s not found in %s", want, url)
+		if _, err := gitx.Run(ctx, mirror, "fetch", "--quiet", "origin", want); err != nil {
+			return fmt.Errorf("commit %s not found in %s", want, url)
 		}
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
 	return mirror, nil
 }
@@ -133,7 +149,14 @@ func (r *Repo) ensureModuleMirror(ctx context.Context, url, want string) (string
 // branches and tags. A --mirror clone fetches +refs/*:refs/*, which would
 // prune the refs/tingly/ pins (see pin.go) on every fetch. Run before each
 // fetch so mirrors made before pinning existed are fixed too.
+// It only writes when the refspec differs, so concurrent readers of the
+// config never see it half-written in the common case; writers hold the
+// mirror lock or own a mirror not yet published.
 func setModuleRefspec(ctx context.Context, mirror string) error {
+	if cur, err := gitx.Run(ctx, mirror, "config", "--get-all", "remote.origin.fetch"); err == nil &&
+		cur == "+refs/heads/*:refs/heads/*\n+refs/tags/*:refs/tags/*" {
+		return nil
+	}
 	for _, args := range [][]string{
 		{"config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"},
 		{"config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"},

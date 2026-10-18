@@ -23,7 +23,9 @@ fetch 会触发 `gc --auto`，不可达对象过了保留期（默认两周）�
 2. **root 的 `keep` 最后写，作为"已固定"的标记。** `PinBase` 有标记就直接返回，否则在仓库级 flock 下固定。`spawn` 每次都调用它，所以修复前建的 base 在下次被用时自动补上。
 3. **子模块镜像的 refspec 改为只管 `refs/heads/*` 和 `refs/tags/*`**，`fetch --prune` 不再碰 `refs/tingly/`。创建、fetch 前、固定时都会设置，旧镜像也会被改过来。
 4. **`--from` 除完整 commit id 外都先 fetch 再解析**；fetch 失败直接报错并提示 `--no-fetch`，不悄悄退回旧值。
-5. **`repo check [--fix]` 是现场的验证手段**：逐个 base 报告是否已固定、`git fsck --connectivity-only` 是否通过；`--fix` 只补固定，已经丢掉的对象找不回来，只会被报出来。
+5. **只固定镜像里完整存在的对象。** 写 keep 前用 `rev-list --objects --missing=print` 检查每个 parent，缺对象的 commit 不放进 keep，index 里缺失的 blob 也不进 tree。否则固定 ref 指向缺失对象，镜像以后的 gc 会直接失败（`unable to read`），整个镜像再也回收不了。缺的东西由 `Fsck` 报出来。
+6. **每个镜像一把锁 `tingly-fuse.lock`**，fetch、按 id fetch、改 refspec、写固定 ref 都在锁内。并发 spawn 同时 fetch 会在同一个 ref 上抢锁失败（8 个并发只成功 1 个）；有锁后，等锁的 spawn 发现锁内已有一次在它开始之后完成的 fetch，就不再 fetch。
+7. **`repo check [--fix]` 是现场的验证手段**：逐个 base 报告是否已固定、`git fsck --connectivity-only` 是否通过；`--fix` 只补固定，已经丢掉的对象找不回来，只会被报出来。
 
 ## 理由
 

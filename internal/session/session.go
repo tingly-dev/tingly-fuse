@@ -102,27 +102,38 @@ func (s *Store) Get(id string) (*Session, error) {
 }
 
 // List returns all sessions, oldest first. Directories without metadata
-// (a spawn in progress or one that failed) are skipped.
+// (a spawn in progress or one that failed) and unreadable metadata are
+// skipped.
 func (s *Store) List() ([]*Session, error) {
+	out, _, err := s.ListStrict()
+	return out, err
+}
+
+// ListStrict is List that also returns the ids of sessions whose metadata
+// exists but cannot be read, so callers that must not miss a session
+// (base removal) can refuse instead of guessing.
+func (s *Store) ListStrict() (out []*Session, unreadable []string, err error) {
 	entries, err := os.ReadDir(s.root())
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	} else if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var out []*Session
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		sess, err := s.Get(e.Name())
 		if err != nil {
+			if _, serr := os.Lstat(filepath.Join(s.Dir(e.Name()), "session.json")); !errors.Is(serr, os.ErrNotExist) {
+				unreadable = append(unreadable, e.Name())
+			}
 			continue
 		}
 		out = append(out, sess)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return out, nil
+	return out, unreadable, nil
 }
 
 // Delete removes the session's directory and everything in it.

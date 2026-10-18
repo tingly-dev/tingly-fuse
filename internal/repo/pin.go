@@ -5,12 +5,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+	"time"
 
 	"github.com/tingly-dev/tingly-fuse/internal/gitx"
 )
@@ -73,8 +74,23 @@ func (r *Repo) Pinned(ctx context.Context, id string) (bool, error) {
 	if _, err := os.Stat(r.BaseDir(id)); err != nil {
 		return false, fmt.Errorf("repo %q has no base %q", r.Name, id)
 	}
-	_, err := gitx.Run(ctx, r.ObjectsDir(), "rev-parse", "--verify", "--quiet", pinRef(id, "root", "keep"))
-	return err == nil, nil
+	out, err := gitx.Run(ctx, r.ObjectsDir(), "for-each-ref", "--format=x", pinRef(id, "root", "keep"))
+	return out != "", err
+}
+
+// PinnedBases returns the ids of all pinned bases, with one git call.
+func (r *Repo) PinnedBases(ctx context.Context) (map[string]bool, error) {
+	out, err := gitx.Run(ctx, r.ObjectsDir(), "for-each-ref", "--format=%(refname)", pinPrefix)
+	if err != nil {
+		return nil, err
+	}
+	pinned := map[string]bool{}
+	for _, ref := range strings.Split(out, "\n") {
+		if id, ok := strings.CutSuffix(strings.TrimPrefix(ref, pinPrefix), "/root/keep"); ok {
+			pinned[id] = true
+		}
+	}
+	return pinned, nil
 }
 
 // Fsck checks that every gitdir of base id can reach all the objects its
@@ -92,10 +108,35 @@ func (r *Repo) Fsck(ctx context.Context, id string) error {
 	return nil
 }
 
-// lock serializes pinning within the repository: concurrent update-ref on
-// the same refs would otherwise fail on each other's lock files.
+// lock serializes pinning within the repository, so two spawns do not
+// both build the same base's pins.
 func (r *Repo) lock() (func(), error) {
-	return flock(filepath.Join(r.dir, ".pin.lock"), syscall.LOCK_EX)
+	return flock(filepath.Join(r.dir, ".pin.lock"), true)
+}
+
+// withMirrorLock runs fn holding mirror's own lock. Everything that writes a
+// mirror's refs or config (fetch, pinning, unpinning) goes through it:
+// concurrent fetches fail on each other's ref locks, and a fetch --prune
+// and an unpin both need packed-refs.lock.
+func withMirrorLock(mirror string, fn func() error) error {
+	unlock, err := flock(filepath.Join(mirror, "tingly-fuse.lock"), true)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return fn()
+}
+
+// fetchMirror fetches into mirror unless another fetch into it finished
+// after since, which covers many spawns waiting on one fetch.
+func fetchMirror(ctx context.Context, mirror string, since time.Time, args ...string) error {
+	return withMirrorLock(mirror, func() error {
+		if fi, err := os.Stat(filepath.Join(mirror, "FETCH_HEAD")); err == nil && fi.ModTime().After(since) && len(args) == 0 {
+			return nil
+		}
+		_, err := gitx.Run(ctx, mirror, append([]string{"fetch", "--quiet", "--prune", "origin"}, args...)...)
+		return err
+	})
 }
 
 // LockBases guards the set of bases. Spawn holds it shared from choosing a
@@ -103,23 +144,7 @@ func (r *Repo) lock() (func(), error) {
 // a base is never deleted between a spawn picking it and the session that
 // records it.
 func (r *Repo) LockBases(exclusive bool) (func(), error) {
-	how := syscall.LOCK_SH
-	if exclusive {
-		how = syscall.LOCK_EX
-	}
-	return flock(filepath.Join(r.dir, ".bases.lock"), how)
-}
-
-func flock(path string, how int) (func(), error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), how); err != nil {
-		f.Close()
-		return nil, err
-	}
-	return func() { f.Close() }, nil
+	return flock(filepath.Join(r.dir, ".bases.lock"), exclusive)
 }
 
 // RemoveBase deletes base id and its pins in every mirror, after which the
@@ -142,20 +167,45 @@ func (r *Repo) RemoveBase(ctx context.Context, id string) error {
 		os.Remove(trash)
 		return err
 	}
+	if err := r.unpin(ctx, id); err != nil {
+		// Put it back: a base with some of its pins gone is still usable
+		// and visible, so the next rm or prune can finish the job.
+		if rerr := os.Rename(filepath.Join(trash, "tree"), dir); rerr == nil {
+			os.Remove(trash)
+		}
+		return fmt.Errorf("remove base %s: %w", id, err)
+	}
+	return removeAll(trash)
+}
+
+// unpin deletes base id's pins in every mirror.
+func (r *Repo) unpin(ctx context.Context, id string) error {
 	mirrors, _ := filepath.Glob(filepath.Join(r.ModulesDir(), "*.git"))
 	for _, m := range append([]string{r.ObjectsDir()}, mirrors...) {
-		refs, err := gitx.Run(ctx, m, "for-each-ref", "--format=delete %(refname)", pinPrefix+id+"/")
+		err := withMirrorLock(m, func() error {
+			refs, err := gitx.Run(ctx, m, "for-each-ref", "--format=delete %(refname)", pinPrefix+id+"/")
+			if err != nil || refs == "" {
+				return err
+			}
+			_, err = gitx.RunWith(ctx, m, nil, refs+"\n", "update-ref", "--stdin")
+			return err
+		})
 		if err != nil {
 			return err
 		}
-		if refs == "" {
-			continue
-		}
-		if _, err := gitx.RunWith(ctx, m, nil, refs+"\n", "update-ref", "--stdin"); err != nil {
-			return err
-		}
 	}
-	return removeAll(trash)
+	return nil
+}
+
+// SweepRemoved deletes what interrupted removals left in bases/.tmp-rm-*.
+// Callers hold LockBases exclusively.
+func (r *Repo) SweepRemoved() error {
+	trash, _ := filepath.Glob(filepath.Join(r.dir, "bases", ".tmp-rm-*"))
+	var errs []error
+	for _, t := range trash {
+		errs = append(errs, removeAll(t))
+	}
+	return errors.Join(errs...)
 }
 
 // removeAll is os.RemoveAll that also copes with read-only directories,
@@ -238,11 +288,17 @@ func pinGitDir(ctx context.Context, gitdir, id, label string) error {
 	if err != nil || mirror == "" {
 		return err
 	}
-	if label != "root" {
-		if err := setModuleRefspec(ctx, mirror); err != nil {
-			return err
+	return withMirrorLock(mirror, func() error {
+		if label != "root" {
+			if err := setModuleRefspec(ctx, mirror); err != nil {
+				return err
+			}
 		}
-	}
+		return pinInto(ctx, gitdir, mirror, id, label)
+	})
+}
+
+func pinInto(ctx context.Context, gitdir, mirror, id, label string) error {
 	gd := "--git-dir=" + gitdir
 	refs, err := gitx.Run(ctx, gitdir, gd, "for-each-ref", "--format=%(objectname) %(refname)")
 	if err != nil {
@@ -258,8 +314,10 @@ func pinGitDir(ctx context.Context, gitdir, id, label string) error {
 	}
 	commits = append(commits, logged...)
 
-	// Only objects the mirror actually has can be pinned; anything else
-	// was already gone before this base was made.
+	// Only objects the mirror actually has, with everything they reach, can
+	// be pinned: a ref to an incomplete object makes every later gc in the
+	// mirror fail. Whatever is missing was gone before pinning; fsck in
+	// repo check reports it.
 	type ref struct{ sha, name string }
 	var want []ref
 	for _, line := range strings.Split(refs, "\n") {
@@ -274,6 +332,19 @@ func pinGitDir(ctx context.Context, gitdir, id, label string) error {
 	types, err := objectTypes(ctx, mirror, append(shas, commits...))
 	if err != nil {
 		return err
+	}
+	var present []string
+	for sha := range types {
+		present = append(present, sha)
+	}
+	whole, err := complete(ctx, mirror, present)
+	if err != nil {
+		return err
+	}
+	for sha := range types {
+		if !whole[sha] {
+			delete(types, sha)
+		}
 	}
 
 	tree, err := indexTree(ctx, gitdir, mirror)
@@ -315,7 +386,9 @@ func pinGitDir(ctx context.Context, gitdir, id, label string) error {
 // refers to and returns its id. Conflicted entries are kept under a
 // suffixed path so their stages survive too.
 func indexTree(ctx context.Context, gitdir, mirror string) (string, error) {
-	var entries strings.Builder
+	type entry struct{ mode, sha, path string }
+	var all []entry
+	var blobs []string
 	if _, err := os.Stat(filepath.Join(gitdir, "index")); err == nil {
 		out, err := gitx.Run(ctx, gitdir, "--git-dir="+gitdir, "ls-files", "--stage", "-z")
 		if err != nil {
@@ -330,10 +403,24 @@ func indexTree(ctx context.Context, gitdir, mirror string) (string, error) {
 			if len(f) != 3 {
 				continue
 			}
+			if f[0] != "160000" { // gitlinks name a commit in another repository
+				blobs = append(blobs, f[1])
+			}
 			if f[2] != "0" {
 				path += "~stage" + f[2]
 			}
-			fmt.Fprintf(&entries, "%s %s 0\t%s\x00", f[0], f[1], path)
+			all = append(all, entry{f[0], f[1], path})
+		}
+	}
+	// Blobs gc already took are left out, so the tree is complete.
+	have, err := objectTypes(ctx, mirror, blobs)
+	if err != nil {
+		return "", err
+	}
+	var entries strings.Builder
+	for _, e := range all {
+		if e.mode == "160000" || have[e.sha] == "blob" {
+			fmt.Fprintf(&entries, "%s %s 0\t%s\x00", e.mode, e.sha, e.path)
 		}
 	}
 	tmp, err := os.CreateTemp("", "tingly-fuse-index-")
@@ -349,7 +436,7 @@ func indexTree(ctx context.Context, gitdir, mirror string) (string, error) {
 			return "", err
 		}
 	}
-	return gitx.RunWith(ctx, mirror, env, "", "write-tree", "--missing-ok")
+	return gitx.RunWith(ctx, mirror, env, "", "write-tree")
 }
 
 // reflogObjects returns the object ids recorded in the reflogs under logs.
@@ -399,4 +486,40 @@ func objectTypes(ctx context.Context, repo string, shas []string) (map[string]st
 		}
 	}
 	return types, nil
+}
+
+// complete returns which of tips (objects mirror has) reach only objects
+// mirror has. One walk answers the usual case where nothing is missing;
+// only then are tips checked one by one.
+func complete(ctx context.Context, mirror string, tips []string) (map[string]bool, error) {
+	whole := map[string]bool{}
+	if len(tips) == 0 {
+		return whole, nil
+	}
+	missing := func(tips []string) (bool, error) {
+		out, err := gitx.RunWith(ctx, mirror, nil, strings.Join(tips, "\n")+"\n",
+			"rev-list", "--objects", "--missing=print", "--stdin")
+		if err != nil {
+			return false, err
+		}
+		return strings.HasPrefix(out, "?") || strings.Contains(out, "\n?"), nil
+	}
+	any, err := missing(tips)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tips {
+		whole[t] = !any
+	}
+	if !any {
+		return whole, nil
+	}
+	for _, t := range tips {
+		m, err := missing([]string{t})
+		if err != nil {
+			return nil, err
+		}
+		whole[t] = !m
+	}
+	return whole, nil
 }
