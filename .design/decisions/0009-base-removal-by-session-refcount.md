@@ -12,7 +12,8 @@ base 只增不减：每个新 commit、每次 `--from-dir` 都多一份，旧的
 1. **引用就是会话记录。** 一个 base 被引用，当且仅当有会话的 `session.json` 记着它。`base rm` 遇到被引用的 base 拒绝，并列出会话；`base prune` 删除所有未被引用的 base，`--dry-run` 只列出。不做后台自动回收。
 2. **删除顺序：** 先把 base 目录 rename 进 `bases/.tmp-rm-*`（`Bases()` 不列 `.tmp-` 开头的目录，所以不会被找到），再删它在所有镜像里的 `refs/tingly/bases/<id>/`，最后删目录。镜像里不再被需要的对象交给 git 的 gc 回收。
 3. **与 spawn 互斥：** 仓库目录下的 `.bases.lock`。spawn 从选定 base 到写完 `session.json` 持共享锁；`base rm`/`prune` 持排他锁，在锁内重新统计引用。固定用另一把锁 `.pin.lock`，两者不嵌套。
-4. `base rm` 接受唯一前缀，方便用 `list` 里的短 id。
+4. **看不清就不删。** 有会话的 `session.json` 存在但读不出来时，`base rm`/`prune` 直接报错并列出这些会话，因为它可能引用任何 base。没有 `session.json` 的目录（spawn 失败的残留）不算引用。删镜像 ref 失败时把目录 rename 回来；`prune` 开始时先清掉上次中断留下的 `.tmp-rm-*`。`repo check --fix` 也持共享锁，不会和删除交错。
+5. `base rm` 接受唯一前缀，方便用 `list` 里的短 id。
 
 ## 理由
 

@@ -216,15 +216,24 @@ func (m *Manager) Bases(ctx context.Context, name string) ([]BaseInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return m.bases(ctx, r)
+	return m.bases(ctx, r, false)
 }
 
-func (m *Manager) bases(ctx context.Context, r *repo.Repo) ([]BaseInfo, error) {
+// bases lists r's bases. With strict set it fails when a session's metadata
+// is unreadable, since that session may use any of them.
+func (m *Manager) bases(ctx context.Context, r *repo.Repo, strict bool) ([]BaseInfo, error) {
 	ids, err := r.Bases()
 	if err != nil {
 		return nil, err
 	}
-	sessions, err := m.sessions.List()
+	sessions, unreadable, err := m.sessions.ListStrict()
+	if err != nil {
+		return nil, err
+	}
+	if strict && len(unreadable) > 0 {
+		return nil, fmt.Errorf("cannot tell which bases sessions %v use: their session.json is unreadable; fix or drop them first", unreadable)
+	}
+	pinned, err := r.PinnedBases(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -240,9 +249,7 @@ func (m *Manager) bases(ctx context.Context, r *repo.Repo) ([]BaseInfo, error) {
 				b.Sessions = append(b.Sessions, s.ID)
 			}
 		}
-		if b.Pinned, err = r.Pinned(ctx, id); err != nil {
-			return nil, err
-		}
+		b.Pinned = pinned[id]
 		out = append(out, b)
 	}
 	return out, nil
@@ -260,7 +267,7 @@ func (m *Manager) RemoveBase(ctx context.Context, name, id string) error {
 		return err
 	}
 	defer unlock()
-	bases, err := m.bases(ctx, r)
+	bases, err := m.bases(ctx, r, true)
 	if err != nil {
 		return err
 	}
@@ -297,7 +304,13 @@ func (m *Manager) PruneBases(ctx context.Context, name string, dryRun bool) ([]s
 		return nil, err
 	}
 	defer unlock()
-	bases, err := m.bases(ctx, r)
+	if !dryRun {
+		// Finish removals an earlier run was interrupted in.
+		if err := r.SweepRemoved(); err != nil {
+			return nil, err
+		}
+	}
+	bases, err := m.bases(ctx, r, true)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +345,13 @@ func (m *Manager) CheckRepo(ctx context.Context, name string, fix bool) ([]BaseH
 	if err != nil {
 		return nil, err
 	}
-	bases, err := m.bases(ctx, r)
+	// Keep bases from being removed while they are checked or pinned.
+	unlock, err := r.LockBases(false)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	bases, err := m.bases(ctx, r, false)
 	if err != nil {
 		return nil, err
 	}
