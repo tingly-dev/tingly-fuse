@@ -87,6 +87,7 @@ type SpawnOptions struct {
 	From    string // revision to start from; default HEAD of the mirror
 	FromDir string // prepared checkout to snapshot as the base (instead of From)
 	Base    string // existing base id to reuse (instead of From or FromDir)
+	NoFetch bool   // resolve From against the mirror as is, fetching only if it is unknown
 	ID      string // optional; random when empty
 	Branch  string // optional; agent/<id> when empty
 	Backend string // optional; backend.Default when empty
@@ -133,12 +134,18 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 			head = h
 		}
 	default:
-		if sha, err = r.Resolve(ctx, orDefault(opts.From, "HEAD")); err != nil {
+		if sha, err = r.Resolve(ctx, orDefault(opts.From, "HEAD"), !opts.NoFetch); err != nil {
 			return nil, err
 		}
 		if baseDir, err = r.EnsureBase(ctx, sha); err != nil {
 			return nil, err
 		}
+	}
+
+	// Pin before any view uses the base, so a gc in the mirrors can never
+	// take objects out from under it. This also repairs older bases.
+	if err := r.PinBase(ctx, sha); err != nil {
+		return nil, err
 	}
 
 	id := opts.ID
@@ -177,6 +184,60 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		return nil, err
 	}
 	return sess, nil
+}
+
+// FetchRepo updates the repository's mirror from upstream.
+func (m *Manager) FetchRepo(ctx context.Context, name string) error {
+	r, err := repo.Open(m.Home, name)
+	if err != nil {
+		return err
+	}
+	return r.Fetch(ctx)
+}
+
+// BaseHealth is the state of one base as CheckRepo sees it.
+type BaseHealth struct {
+	ID       string
+	Sessions int
+	Pinned   bool  // its objects are protected from gc in the mirrors
+	Err      error // fsck failure: objects it needs are missing
+}
+
+// CheckRepo reports, for every base of the repository, whether it is pinned
+// and whether git can still reach every object it needs. With fix set it
+// pins unpinned bases first; it cannot bring back objects already gone.
+func (m *Manager) CheckRepo(ctx context.Context, name string, fix bool) ([]BaseHealth, error) {
+	r, err := repo.Open(m.Home, name)
+	if err != nil {
+		return nil, err
+	}
+	bases, err := r.Bases()
+	if err != nil {
+		return nil, err
+	}
+	sessions, err := m.sessions.List()
+	if err != nil {
+		return nil, err
+	}
+	var out []BaseHealth
+	for _, id := range bases {
+		h := BaseHealth{ID: id}
+		for _, s := range sessions {
+			if s.Repo == name && s.Base == id {
+				h.Sessions++
+			}
+		}
+		var pinErr error
+		if fix {
+			pinErr = r.PinBase(ctx, id)
+		}
+		if h.Pinned, err = r.Pinned(ctx, id); err != nil {
+			return nil, err
+		}
+		h.Err = errors.Join(pinErr, r.Fsck(ctx, id))
+		out = append(out, h)
+	}
+	return out, nil
 }
 
 // Session loads a session by id.

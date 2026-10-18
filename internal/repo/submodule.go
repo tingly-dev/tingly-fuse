@@ -101,6 +101,9 @@ func (r *Repo) ensureModuleMirror(ctx context.Context, url, want string) (string
 		if _, err := gitx.Run(ctx, tmp, "clone", "--quiet", "--mirror", url, "m.git"); err != nil {
 			return "", err
 		}
+		if err := setModuleRefspec(ctx, filepath.Join(tmp, "m.git")); err != nil {
+			return "", err
+		}
 		if err := os.Rename(filepath.Join(tmp, "m.git"), mirror); err != nil {
 			if _, statErr := os.Stat(mirror); statErr != nil {
 				return "", err
@@ -109,6 +112,9 @@ func (r *Repo) ensureModuleMirror(ctx context.Context, url, want string) (string
 	}
 	if _, err := gitx.Run(ctx, mirror, "cat-file", "-e", want+"^{commit}"); err == nil {
 		return mirror, nil
+	}
+	if err := setModuleRefspec(ctx, mirror); err != nil {
+		return "", err
 	}
 	if _, err := gitx.Run(ctx, mirror, "fetch", "--quiet", "--prune", "origin"); err != nil {
 		return "", err
@@ -121,4 +127,20 @@ func (r *Repo) ensureModuleMirror(ctx context.Context, url, want string) (string
 		}
 	}
 	return mirror, nil
+}
+
+// setModuleRefspec limits what fetch --prune may delete in a module mirror to
+// branches and tags. A --mirror clone fetches +refs/*:refs/*, which would
+// prune the refs/tingly/ pins (see pin.go) on every fetch. Run before each
+// fetch so mirrors made before pinning existed are fixed too.
+func setModuleRefspec(ctx context.Context, mirror string) error {
+	for _, args := range [][]string{
+		{"config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"},
+		{"config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"},
+	} {
+		if _, err := gitx.Run(ctx, mirror, args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }

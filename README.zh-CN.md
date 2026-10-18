@@ -124,6 +124,8 @@ tingly-fuse spawn tingly-box --base dir-…                # 之后的会话复�
 |---|---|
 | `repo add <name> <upstream>` | 登记仓库并建共享镜像 |
 | `repo list [-v]` | 列出仓库；`-v` 加上会话数和 base 数 |
+| `repo fetch <name>` | 从 upstream 更新镜像 |
+| `repo check <name> [--fix]` | 检查每个 base 是否已固定（不会被 gc 清掉）、对象是否齐全；`--fix` 为旧 base 补上固定 |
 | `repo remove <name> [--force]` | 删除镜像和所有 base；`--force` 先 drop 该仓库的会话 |
 | `spawn <repo> [flags]` | 新建会话并打印 id |
 | `exec <session> -- <cmd> [args...]` | 在会话视图里运行命令 |
@@ -135,7 +137,8 @@ tingly-fuse spawn tingly-box --base dir-…                # 之后的会话复�
 
 | 参数 | 含义 |
 |---|---|
-| `--from <rev>` | 起始 revision（默认 upstream 的 `HEAD`） |
+| `--from <rev>` | 起始 revision（默认 upstream 的 `HEAD`）。除完整 commit id 外都会先 fetch，所以 `main` 指的是 upstream 现在的 main |
+| `--no-fetch` | 直接用镜像里现有的内容解析 `--from`（离线，或想继续用已有的 commit） |
 | `--from-dir <dir>` | 把准备好的 checkout 快照成 base |
 | `--base <id>` | 复用已有 base（id 即 `spawn` 打印的 `base:`，或 `list` 的 BASE 列） |
 | `--branch <name>` | 要创建的分支（默认 `agent/<id>`） |

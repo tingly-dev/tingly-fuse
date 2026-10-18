@@ -150,17 +150,33 @@ func (r *Repo) Fetch(ctx context.Context) error {
 	return err
 }
 
-// Resolve turns a revision into a commit sha, fetching once if it is not
-// known locally.
-func (r *Repo) Resolve(ctx context.Context, rev string) (string, error) {
-	sha, err := gitx.Run(ctx, r.ObjectsDir(), "rev-parse", "--verify", "--quiet", rev+"^{commit}")
-	if err == nil {
+var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// Resolve turns a revision into a commit sha. Unless rev is a full commit id
+// the mirror already has, it fetches first, so a branch name means what it
+// means upstream now and not when the mirror was last updated. With fetch
+// unset it only fetches when rev is unknown locally.
+func (r *Repo) Resolve(ctx context.Context, rev string, fetch bool) (string, error) {
+	local := func() (string, error) {
+		return gitx.Run(ctx, r.ObjectsDir(), "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	}
+	fetched := false
+	if fetch && !fullSHA.MatchString(rev) {
+		if err := r.Fetch(ctx); err != nil {
+			return "", fmt.Errorf("resolve %q: %w (pass --no-fetch to use the local mirror as is)", rev, err)
+		}
+		fetched = true
+	}
+	if sha, err := local(); err == nil || fetched {
+		if err != nil {
+			return "", fmt.Errorf("unknown revision %q", rev)
+		}
 		return sha, nil
 	}
 	if ferr := r.Fetch(ctx); ferr != nil {
 		return "", fmt.Errorf("resolve %q: %w", rev, ferr)
 	}
-	sha, err = gitx.Run(ctx, r.ObjectsDir(), "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	sha, err := local()
 	if err != nil {
 		return "", fmt.Errorf("unknown revision %q", rev)
 	}
