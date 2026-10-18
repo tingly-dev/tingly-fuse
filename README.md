@@ -1,71 +1,215 @@
 # tingly-fuse
 
-让多个 agent 共用一个 git 仓库：每个 agent 拿到一个私有的、写时复制的工作区视图，从某个 commit 开始，只堆叠自己的分支，最后推到远端。不需要为每个 agent 开 worktree，也不需要容器编排。
+**English** | [简体中文](README.zh-CN.md)
 
-设计记录在 [.design/](.design/)：[架构](.design/architecture.md)、[路线图](.design/roadmap.md)、[决策记录](.design/decisions/)和[前期调研](.design/research/research-multi-agent-git-workspace.md)。改动设计时请同步更新那里。
+Run many coding agents on one git repository at the same time, without a worktree per agent and without container orchestration.
 
-## 用法
+Each agent gets a **private, copy-on-write view** of the repository. It starts from a commit you choose, commits only to its own branch, and pushes that branch to your remote. Merging and review happen there, as normal pull requests.
+
+## Why
+
+When several agents share one checkout, they overwrite each other's files, index and `HEAD`. The usual fixes have costs:
+
+- **A worktree or clone per agent** gives every agent a different path. Build caches that key on absolute paths (Go's, for example) miss on every new path, so each agent pays for a cold build. On [tingly-box](https://github.com/tingly-dev/tingly-box) that is about 150 s per agent.
+- **A container per agent** solves isolation but brings images, orchestration and volume management along with it.
+
+tingly-fuse separates what can be shared from what must be private:
+
+| Shared by all sessions | Private to each session |
+|---|---|
+| Git objects (one bare mirror per repo) | Working-tree changes |
+| Unchanged files of the base checkout | Index, `HEAD`, branch |
+| Build caches, when the path is the same | Anything the agent writes |
+
+On Linux, every session sees the repository at **the same path** (`/workspace/<repo>` by default), each through its own mount namespace. Path-keyed caches keep hitting, so from the second session on, the tingly-box `go build` drops from about 150 s to about 15 s. Creating a session takes about 30 ms and roughly 100 KB of disk. See the [benchmarks](bench/README.md).
+
+## How it works
+
+```
+                 ~/.tingly-fuse/repos/<repo>/
+                 ├── objects.git      one bare mirror; every git object lives here
+                 └── bases/<commit>/  read-only checkout of a commit (.git uses alternates)
+                            │
+          ┌─────────────────┼─────────────────┐
+          ▼                 ▼                 ▼
+      session A         session B         session C        copy-on-write views
+  /workspace/<repo>  /workspace/<repo>  /workspace/<repo>  (same path on Linux)
+   branch agent/A     branch agent/B     branch agent/C
+          │                 │                 │
+          └──────── git push to upstream ─────┘  →  merge via PR on the remote
+```
+
+1. `repo add` registers an upstream and mirrors it once.
+2. `spawn` makes sure a read-only base checkout exists for the chosen commit, then creates a session view on top of it and a branch `agent/<id>`.
+3. `exec` runs a command (your agent, a shell, a build) inside that view.
+4. `push` pushes the session's branch to the real upstream. `drop` throws the session away.
+
+tingly-fuse does not prepare environments (installing dependencies, building). Do that first in a normal checkout, then hand it over with `spawn --from-dir` (see below).
+
+## Requirements
+
+- Go 1.24+ to build, and `git` on `PATH`.
+- **Linux** (default `overlay` backend): overlayfs and `nsenter` (util-linux). As non-root you also need Linux 5.11+ with unprivileged user namespaces enabled, and a writable view root (see [Linux setup](#linux-setup)).
+- **macOS** (default `clone` backend): an APFS volume for copy-on-write. Other volumes fall back to a full copy.
+- Anywhere else, or as a fallback, use `--backend copy`.
+
+## Install
 
 ```sh
+go install github.com/tingly-dev/tingly-fuse/cmd/tingly-fuse@latest
+# or, from a clone of this repo
 go build -o tingly-fuse ./cmd/tingly-fuse
-
-tingly-fuse repo add tingly-box https://github.com/tingly-dev/tingly-box
-id=$(tingly-fuse spawn tingly-box --from main)     # 打印会话 id
-tingly-fuse exec "$id" -- claude                   # 在视图里启动 agent
-tingly-fuse push "$id"                             # 推送分支 agent/<id>
-tingly-fuse drop "$id"
-tingly-fuse list
-tingly-fuse repo list -v                           # 带会话数和 base 数
-tingly-fuse repo remove tingly-box --force         # 删除镜像和所有 base；--force 先 drop 它的会话
 ```
 
-已经装好依赖、构建过的目录可以直接当底层（环境准备由你在 tingly-fuse 之前完成）：
+### Linux setup
+
+As a non-root user, create the view root once:
 
 ```sh
-id=$(tingly-fuse spawn tingly-box --from-dir ~/src/tingly-box)   # 快照该目录，含 node_modules 等被忽略的文件
-tingly-fuse spawn tingly-box --base dir-…                        # 复用同一份快照（id 见 repo list -v），不再复制
+sudo mkdir -p /workspace && sudo chown "$USER" /workspace
 ```
 
-`--from-dir` 用 reflink 复制，之后源目录怎么改都不影响已有会话；目录里未推送的提交、已暂存的文件和子模块对象会并入共享镜像。要求目录的 `.git` 是目录（不支持 worktree）。pnpm 项目注意：在 overlay 视图里 pnpm 会因设备号不同改用项目内 store 而重装，会话里设 `npm_config_store_dir` 指向准备环境时用的 store 目录即可（tingly-box 上 `pnpm install` 1.2 秒、额外约 12 MB，否则约 690 MB）。细节见 [决策 0007](.design/decisions/0007-from-dir-snapshot-and-absorb-objects.md)。
+Or point it somewhere you already own with `TINGLY_FUSE_VIEW_ROOT=/path/to/views`.
 
-视图内运行的每个进程都会拿到 `TINGLY_WORKSPACE`（视图路径）、`TINGLY_SESSION`、`TINGLY_REPO` 三个环境变量。脚本和配置应读 `TINGLY_WORKSPACE`，不要写死路径：macOS 的 `clone` 后端每个会话的视图路径都不同。
+## Quick start
 
-状态目录默认是 `~/.tingly-fuse`，可用 `TINGLY_FUSE_HOME` 覆盖：
+```sh
+# 1. Register a repository (mirrors it once).
+tingly-fuse repo add tingly-box https://github.com/tingly-dev/tingly-box
 
+# 2. Start a session from a commit. Prints the session id; view path and branch go to stderr.
+id=$(tingly-fuse spawn tingly-box --from main)
+
+# 3. Run your agent inside the session's view.
+tingly-fuse exec "$id" -- claude
+
+# 4. Push the session's branch (agent/<id>) to the upstream, then open a PR there.
+tingly-fuse push "$id"
+
+# 5. Remove the session when you are done. Unpushed work is lost.
+tingly-fuse drop "$id"
 ```
-repos/<name>/objects.git    共享对象库（bare 镜像），所有对象只存在这里
-repos/<name>/bases/<sha>/   某个 commit 的只读基础 checkout，.git 用 alternates 指向 objects.git
-sessions/<id>/session.json  会话元数据
-sessions/<id>/...           后端私有状态
+
+Run as many sessions in parallel as you like. They all start from the same base and never see each other's changes:
+
+```sh
+for task in fix-login add-tests update-docs; do
+  id=$(tingly-fuse spawn tingly-box --from main --branch "agent/$task")
+  tingly-fuse exec "$id" -- claude -p "$(cat tasks/$task.md)" &
+done
+wait
+tingly-fuse list
 ```
 
-## 后端
+### Start from a prepared directory
 
-后端只负责"会话的文件树在哪里、怎么启动一个能看到它的进程"，git 和会话管理都在 `internal/manager`。接口见 [internal/backend/backend.go](internal/backend/backend.go)：
+If your project needs installed dependencies or build output, prepare a normal checkout first, then snapshot it as the base:
 
-| 后端 | 平台 | 视图路径 | 状态 |
+```sh
+cd ~/src/tingly-box && pnpm install && go build ./...    # your own setup, outside tingly-fuse
+
+id=$(tingly-fuse spawn tingly-box --from-dir ~/src/tingly-box)
+tingly-fuse list                                         # BASE column shows the new base id: dir-…
+tingly-fuse spawn tingly-box --base dir-…                # more sessions reuse that snapshot, no new copy
+```
+
+- The snapshot is a reflink copy, ignored files such as `node_modules` included. Later changes to the source directory do not affect existing sessions.
+- Unpushed commits, staged files and submodule objects in the directory are merged into the shared mirror, so nothing is lost.
+- The directory's `.git` must be a directory. Worktrees are not supported.
+- **pnpm on Linux:** inside an overlay view, pnpm sees a different device and falls back to a project-local store, reinstalling everything (about 690 MB on tingly-box). Set `npm_config_store_dir` in the session to the store you used when preparing; `pnpm install` then takes about 1.2 s and about 12 MB. Details in [ADR 0007](.design/decisions/0007-from-dir-snapshot-and-absorb-objects.md).
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `repo add <name> <upstream>` | Register a repository and create its shared mirror |
+| `repo list [-v]` | List repositories; `-v` adds session and base counts |
+| `repo remove <name> [--force]` | Delete the mirror and all bases; `--force` drops the repo's sessions first |
+| `spawn <repo> [flags]` | Create a session and print its id |
+| `exec <session> -- <cmd> [args...]` | Run a command inside the session's view |
+| `push <session> [--remote r]` | Push the session's branch (default remote `origin`, which is the real upstream) |
+| `drop <session>` | Delete the session and its view |
+| `list` | List sessions with repo, branch, base, backend and view path |
+
+`spawn` flags:
+
+| Flag | Meaning |
+|---|---|
+| `--from <rev>` | Revision to start from (default: upstream `HEAD`) |
+| `--from-dir <dir>` | Snapshot a prepared checkout as the base |
+| `--base <id>` | Reuse an existing base (the id `spawn` prints as `base:`, or the BASE column of `list`) |
+| `--branch <name>` | Branch to create (default `agent/<id>`) |
+| `--id <id>` | Session id (default: random) |
+| `--backend <name>` | `overlay`, `clone` or `copy` (default depends on the platform) |
+
+If `spawn` fails partway, it cleans up everything it created.
+
+## Environment variables
+
+Inside a session, every process started by `exec` gets:
+
+| Variable | Value |
+|---|---|
+| `TINGLY_WORKSPACE` | The view path, which is also the working directory |
+| `TINGLY_SESSION` | The session id |
+| `TINGLY_REPO` | The repository name |
+
+Scripts and agent configs should read `TINGLY_WORKSPACE` rather than hard-code a path, because on macOS each session has a different path.
+
+Configuration:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TINGLY_FUSE_HOME` | `~/.tingly-fuse` | State directory |
+| `TINGLY_FUSE_VIEW_ROOT` | `/workspace` | Linux overlay view root; read at `spawn` and stored with the session |
+
+## Backends
+
+A backend only decides where a session's file tree lives and how to start a process that sees it. Git and session handling are shared.
+
+| Backend | Platform | View path | How |
 |---|---|---|---|
-| `copy` | 全平台 | `sessions/<id>/root`，每会话不同 | ✅ 基准实现：整份复制基础 checkout |
-| `overlay` | Linux（默认） | 固定路径 `/workspace/<repo>`，所有会话相同 | ✅ mount namespace + overlayfs，upper/work 在 `sessions/<id>/` |
-| `clone` | macOS（默认） | `sessions/<id>/root`，每会话不同 | ✅ APFS clonefile 写时复制；非 APFS 卷自动退回整份复制 |
+| `overlay` | Linux (default) | Same for every session, `/workspace/<repo>` | One long-lived mount namespace per session with overlayfs (lower = base, upper = session). Invisible to the host and to other sessions. |
+| `clone` | macOS (default) | Different per session | APFS `clonefile` copy-on-write; full copy on non-APFS volumes |
+| `copy` | Any | Different per session | Full copy of the base; the reference implementation and fallback |
 
-`overlay` 后端说明：
+Concurrent `exec` calls on one overlay session join the same mount, so they see each other's writes. If the holder process dies, the next `exec` remounts from the session's upper layer without losing writes.
 
-- 每个会话只有一个 mount namespace 和一个 overlay 挂载（lower = 基础 checkout，upper/work 在会话目录），由常驻的 holder 进程持有；每次 `exec` 用 `nsenter`（util-linux）加入它，所以同一会话的并发 `exec` 看到的是同一个挂载。宿主和其他会话都看不到这个挂载，宿主上的 `/workspace/<repo>` 只是一个空的挂载点。
-- holder 的 pid 和 namespace 记在 `sessions/<id>/holder.json`。holder 意外退出时，如果还有命令在原 namespace 里运行就加入它，否则重新挂载（写入都在 upper 里，不会丢）；`drop` 时结束 holder。
-- 视图根目录默认 `/workspace`，可用 `TINGLY_FUSE_VIEW_ROOT` 覆盖（在 spawn 时生效，之后记录在会话元数据里）。
-- root 下只用 `CLONE_NEWNS`；非 root 时额外用 user namespace，把自己的 uid/gid 映射为自身，需要 Linux 5.11+ 且允许 unprivileged user namespace。非 root 用户需要先能创建挂载点：`sudo mkdir -p /workspace && sudo chown $USER /workspace`，或改用 `TINGLY_FUSE_VIEW_ROOT`。
-- 内核不支持时用 `--backend copy`。
+## State directory
 
-实现新后端的约定：
+```
+~/.tingly-fuse/
+├── repos/<name>/
+│   ├── repo.json              registration (upstream)
+│   ├── objects.git            bare mirror; the only place objects are stored
+│   ├── modules/<hash>.git     submodule mirrors, shared across bases
+│   └── bases/<commit>/        read-only base checkouts (dir-… for --from-dir snapshots)
+└── sessions/<id>/
+    ├── session.json           repo, base, branch, backend, view path
+    └── ...                    backend state (overlay upper/work, holder.json)
+```
 
-- `Create` 只能读 `BaseDir`，绝不能写；所有写入落在 `StateDir` 之下。
-- `Command` 返回的进程工作目录必须是视图根目录；不要覆盖 `cmd.Env` 里已有的变量，manager 会在其后追加。
-- `Remove` 必须能处理只创建了一半的工作区。
-- 在 `init` 里调用 `backend.Register`，并在 `cmd/tingly-fuse/main.go` 里匿名导入；平台默认值通过 `backend.Default` 设置。
+## Limitations
 
-## 测试
+- macOS has no mount namespaces, so sessions there get different paths. Mitigate with `TINGLY_WORKSPACE` in scripts and `go build -trimpath`. A same-path mode through a lightweight Linux VM is an idea, not implemented.
+- Sessions are fully isolated. Conflicts between sessions show up only after pushing, in the PR.
+- `drop` deletes unpushed work.
+
+See the [roadmap](.design/roadmap.md) for what is done and what is being considered.
+
+## Development
 
 ```sh
 go test -race ./...
 ```
+
+Design records live in [.design/](.design/): [architecture](.design/architecture.md), [roadmap](.design/roadmap.md), [decisions (ADRs)](.design/decisions/) and the [initial research](.design/research/research-multi-agent-git-workspace.md). Update them in the same PR when you change the design. Changes go through a branch and a pull request.
+
+### Writing a backend
+
+The interface is in [internal/backend/backend.go](internal/backend/backend.go).
+
+- `Create` may only read `BaseDir`, never write it. All writes go under `StateDir`.
+- The process returned by `Command` must have the view root as its working directory. Do not override variables already in `cmd.Env`; the manager appends after them.
+- `Remove` must handle a half-created workspace.
+- Call `backend.Register` in `init`, add a blank import in `cmd/tingly-fuse/main.go`, and set platform defaults through `backend.Default`.
