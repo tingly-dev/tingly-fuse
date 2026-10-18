@@ -19,6 +19,7 @@
 
 | 8. base 对象可达性与新鲜度 | base、`--from-dir` 并入的对象、子模块 commit 在镜像里建固定 ref；`spawn --from <分支>` 先 fetch；`repo fetch`、`repo check [--fix]`（[0008](decisions/0008-pin-base-objects-in-mirrors.md)，[issue #6](https://github.com/tingly-dev/tingly-fuse/issues/6) 第 1、2 步） | `internal/manager/lifecycle_test.go` 的场景在修复前全部失败（视图里 `git status` 报 `bad object HEAD`），修复后通过：上游删分支并重写 main、`--from-dir` 的未推送提交 / reflog / stash / 暂存 blob、子模块 commit 所在分支被删，之后镜像 fetch --prune 加 `gc --prune=now`，视图里 `git fsck` 无错。2026-10-18 在真实 tingly-box 上：首次固定约 0.5 秒（4 个 gitdir），之后每次 spawn 只多一次 `rev-parse`；固定后 `gc --prune=now`，overlay 和 copy 会话里 `git fsck` 均通过 | ✅ |
 | 9. base 回收 | `base list/rm/prune`，按会话引用回收，删除时一并删掉固定 ref，与 spawn 加锁互斥（[0009](decisions/0009-base-removal-by-session-refcount.md)，issue #6 第 3 步） | `TestRemoveAndPruneBases`：被引用的 base 拒绝删除，prune 后固定 ref 消失、gc 回收只属于它的对象、留下的会话 `fsck` 正常；`TestPruneDoesNotRaceSpawn`：去掉锁时稳定失败，加锁后通过。2026-10-18 tingly-box 端到端（[bench/lifecycle.sh](../bench/lifecycle.sh)）：prune 一个 commit base 和一个快照后 gc，仓库目录约 443 MB 降到约 294 MB | ✅ |
+| 10. harness | lifecycle 场景测试在每个可用后端上跑；CLI 端到端测试；CI（gofmt、vet、Linux 普通用户和 root、macOS、tingly-box 端到端） | 本地：lifecycle 场景在 copy 和 overlay 上全部通过，以 uid 65534 运行也通过；CLI 测试能抓到之前 `base` 子命令参数解析的 bug（把 bug 放回去时测试失败）。macOS 和 CI 上的结果以 PR 的 CI 为准 | 🔶 |
 
 ## 进行中与待做
 

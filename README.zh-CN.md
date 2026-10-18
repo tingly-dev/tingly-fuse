@@ -206,8 +206,18 @@ tingly-fuse spawn tingly-box --base dir-…                # 之后的会话复�
 ## 开发
 
 ```sh
-go test -race ./...
+go test -race ./...                 # 单元、场景和 CLI 测试
+bench/lifecycle.sh                  # 在真实 tingly-box 上端到端（需要网络）
 ```
+
+这些测试就是存储层的 harness：
+
+| 层次 | 位置 | 检查什么 |
+|---|---|---|
+| 场景 | `internal/manager/lifecycle_test.go` | 上游改写历史、`--from-dir` 的对象、子模块、fetch 新鲜度、补固定、prune 以及 prune 与 spawn 并发。每个场景在本机能用的所有后端上跑（Linux 上 copy 和 overlay，macOS 上 copy 和 clone），最后在视图里 `git fsck` |
+| CLI | `cmd/tingly-fuse/main_test.go` | 通过真实二进制跑每个命令：参数、输出、退出码 |
+| 端到端 | `bench/lifecycle.sh` | 在真实仓库上跑同样的生命周期；`TF_OLD=<二进制>` 验证从旧版本升级。结果见 [bench/README.md](bench/README.md) |
+| CI | `.github/workflows/ci.yml` | gofmt、vet；Linux（另以 root 跑一遍，overlay 不会被跳过）和 macOS 上的测试；copy 和 overlay 上的端到端脚本 |
 
 设计记录在 [.design/](.design/)：[架构](.design/architecture.md)、[路线图](.design/roadmap.md)、[决策记录](.design/decisions/)和[前期调研](.design/research/research-multi-agent-git-workspace.md)。改动设计时请在同一个 PR 里同步更新。改动走分支加 PR。
 

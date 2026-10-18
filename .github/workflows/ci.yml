@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+defaults:
+  run:
+    shell: bash # -eo pipefail, so piped test output still fails the step
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l . | tee /dev/stderr)"
+      - run: go vet ./...
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux covers copy and overlay, macOS copy and clone (APFS).
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+      # Unprivileged overlay needs user namespaces, which the runner may
+      # not allow; as root the overlay tests always run instead of skipping.
+      - name: go test (root, overlay)
+        if: runner.os == 'Linux'
+        run: |
+          go test -c -race -o /tmp/manager.test ./internal/manager
+          go test -c -race -o /tmp/overlay.test ./internal/backend/overlay
+          sudo /tmp/overlay.test -test.v -test.run . | tail -20
+          sudo /tmp/manager.test -test.v -test.run . | grep -E '^(---|    ---|ok|PASS|FAIL)'
+
+  # End to end on a real repository: upstream rewrite, gc, fsck, prune.
+  lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o /tmp/tingly-fuse ./cmd/tingly-fuse
+      - name: copy backend
+        run: TF_NEW=/tmp/tingly-fuse BACKEND=copy bench/lifecycle.sh
+      - name: overlay backend
+        run: sudo -E env PATH="$PATH" TF_NEW=/tmp/tingly-fuse BACKEND=overlay bench/lifecycle.sh

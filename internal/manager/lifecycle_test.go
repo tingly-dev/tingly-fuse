@@ -69,6 +69,10 @@ func fsckView(t *testing.T, m *manager.Manager, id string) {
 }
 
 func TestBaseSurvivesUpstreamRewriteAndGC(t *testing.T) {
+	eachBackend(t, testBaseSurvivesUpstreamRewriteAndGC)
+}
+
+func testBaseSurvivesUpstreamRewriteAndGC(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
 	topic := commitTo(t, upstream, "topic", "topic.txt", "topic\n", false)
@@ -109,7 +113,9 @@ func TestBaseSurvivesUpstreamRewriteAndGC(t *testing.T) {
 	fsckView(t, m, "again")
 }
 
-func TestFromDirObjectsSurviveGC(t *testing.T) {
+func TestFromDirObjectsSurviveGC(t *testing.T) { eachBackend(t, testFromDirObjectsSurviveGC) }
+
+func testFromDirObjectsSurviveGC(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
 
@@ -153,6 +159,10 @@ func TestFromDirObjectsSurviveGC(t *testing.T) {
 }
 
 func TestSubmoduleObjectsSurviveUpstreamRewriteAndGC(t *testing.T) {
+	eachBackend(t, testSubmoduleObjectsSurviveUpstreamRewriteAndGC)
+}
+
+func testSubmoduleObjectsSurviveUpstreamRewriteAndGC(t *testing.T) {
 	t.Setenv("GIT_AUTHOR_NAME", "test")
 	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
 	t.Setenv("GIT_COMMITTER_NAME", "test")
@@ -183,6 +193,7 @@ func TestSubmoduleObjectsSurviveUpstreamRewriteAndGC(t *testing.T) {
 	git(t, tmp, "clone", "--quiet", "--bare", src, upstream)
 
 	m := manager.New(filepath.Join(tmp, "home"))
+	dropAll(t, m)
 	if _, err := m.AddRepo(ctx, "demo", upstream); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +216,9 @@ func TestSubmoduleObjectsSurviveUpstreamRewriteAndGC(t *testing.T) {
 	}
 }
 
-func TestSpawnFollowsUpstream(t *testing.T) {
+func TestSpawnFollowsUpstream(t *testing.T) { eachBackend(t, testSpawnFollowsUpstream) }
+
+func testSpawnFollowsUpstream(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
 	old, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "old"})
@@ -247,6 +260,10 @@ func TestSpawnFollowsUpstream(t *testing.T) {
 }
 
 func TestCheckRepoFindsAndRepairsUnpinnedBases(t *testing.T) {
+	eachBackend(t, testCheckRepoFindsAndRepairsUnpinnedBases)
+}
+
+func testCheckRepoFindsAndRepairsUnpinnedBases(t *testing.T) {
 	m, _ := setup(t)
 	ctx := context.Background()
 	s, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a"})
@@ -295,7 +312,9 @@ func TestCheckRepoFindsAndRepairsUnpinnedBases(t *testing.T) {
 	}
 }
 
-func TestRemoveAndPruneBases(t *testing.T) {
+func TestRemoveAndPruneBases(t *testing.T) { eachBackend(t, testRemoveAndPruneBases) }
+
+func testRemoveAndPruneBases(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
 	main, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "main"})
@@ -374,7 +393,9 @@ func TestRemoveAndPruneBases(t *testing.T) {
 
 // Prune running alongside spawns must never delete a base a session ends
 // up on.
-func TestPruneDoesNotRaceSpawn(t *testing.T) {
+func TestPruneDoesNotRaceSpawn(t *testing.T) { eachBackend(t, testPruneDoesNotRaceSpawn) }
+
+func testPruneDoesNotRaceSpawn(t *testing.T) {
 	m, _ := setup(t)
 	ctx := context.Background()
 	seed, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "seed"})
