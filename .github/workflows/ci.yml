@@ -33,7 +33,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test -race ./...
+      # -count=1: a cached pass would hide which backends actually ran.
+      - name: go test
+        run: |
+          go test -race -count=1 -v ./... > test.log || { grep -E '^(---|    ---|FAIL|ok|panic)' test.log; tail -50 test.log; exit 1; }
+          grep -E '^(ok|    --- (PASS|SKIP))' test.log
       # Unprivileged overlay needs user namespaces, which the runner may
       # not allow; as root the overlay tests always run instead of skipping.
       - name: go test (root, overlay)
