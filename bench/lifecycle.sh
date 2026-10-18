@@ -36,7 +36,7 @@ step() { # step <name> <cmd...>: run, time, report; never aborts the script
 	t0=$(date +%s.%N)
 	"$@" >"$work/out" 2>&1 || rc=$?
 	t1=$(date +%s.%N)
-	printf '%-34s %6.2fs  %s\n' "$name" "$(echo "$t1 - $t0" | bc)" "$([ $rc = 0 ] && echo ok || echo "FAIL ($rc)")"
+	printf '%-34s %6.2fs  %s\n' "$name" "$(awk "BEGIN { print $t1 - $t0 }")" "$([ $rc = 0 ] && echo ok || echo "FAIL ($rc)")"
 	if [ $rc != 0 ]; then
 		sed 's/^/    /' "$work/out" | head -8
 		failures=$((failures + 1))
@@ -112,7 +112,7 @@ step "fsck session main after prune" fsck_session main
 step "repo check after prune" "$TF_NEW" repo check r
 echo "repo dir: ${before} KB before prune, $(size) KB after; bases left: $(ls "$TINGLY_FUSE_HOME/repos/r/bases" | wc -l)"
 
-echo "pinned refs: $(for m in "$TINGLY_FUSE_HOME"/repos/r/objects.git "$TINGLY_FUSE_HOME"/repos/r/modules/*.git; do git -C "$m" for-each-ref refs/tingly/ | wc -l; done | paste -sd+ | bc)"
+echo "pinned refs: $(for m in "$TINGLY_FUSE_HOME"/repos/r/objects.git "$TINGLY_FUSE_HOME"/repos/r/modules/*.git; do git -C "$m" for-each-ref refs/tingly/ | wc -l; done | awk '{ n += $1 } END { print n }')"
 for s in $("$TF_NEW" list | awk 'NR > 1 { print $1 }'); do "$TF_NEW" drop "$s" >/dev/null 2>&1 || true; done
 rm -rf "$work"
 echo "failures: $failures"

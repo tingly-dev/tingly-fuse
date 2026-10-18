@@ -206,8 +206,18 @@ See the [roadmap](.design/roadmap.md) for what is done and what is being conside
 ## Development
 
 ```sh
-go test -race ./...
+go test -race ./...                 # unit, scenario and CLI tests
+bench/lifecycle.sh                  # end to end on real tingly-box (needs network)
 ```
+
+The tests are the harness that keeps the storage layer honest:
+
+| Layer | Where | What it checks |
+|---|---|---|
+| Scenarios | `internal/manager/lifecycle_test.go` | Upstream rewrites, `--from-dir` objects, submodules, fetch freshness, pin repair, prune and prune racing spawn. Each one runs on every backend usable on the host (copy and overlay on Linux, copy and clone on macOS) and ends with `git fsck` in the views |
+| CLI | `cmd/tingly-fuse/main_test.go` | Every command through the real binary: arguments, output, exit codes |
+| End to end | `bench/lifecycle.sh` | The same lifecycle on a real repository; `TF_OLD=<binary>` checks upgrading from an older version. Results in [bench/README.md](bench/README.md) |
+| CI | `.github/workflows/ci.yml` | gofmt, vet, the tests on Linux (also as root, so overlay never skips) and macOS, and the end-to-end script on copy and overlay |
 
 Design records live in [.design/](.design/): [architecture](.design/architecture.md), [roadmap](.design/roadmap.md), [decisions (ADRs)](.design/decisions/) and the [initial research](.design/research/research-multi-agent-git-workspace.md). Update them in the same PR when you change the design. Changes go through a branch and a pull request.
 

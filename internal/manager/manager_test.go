@@ -44,6 +44,7 @@ func setup(t *testing.T) (*manager.Manager, string) {
 	git(t, tmp, "clone", "--quiet", "--bare", src, upstream)
 
 	m := manager.New(filepath.Join(tmp, "home"))
+	dropAll(t, m)
 	if _, err := m.AddRepo(context.Background(), "demo", upstream); err != nil {
 		t.Fatal(err)
 	}
