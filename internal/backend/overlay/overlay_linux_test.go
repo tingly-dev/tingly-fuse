@@ -75,7 +75,10 @@ func probe(t *testing.T, tmp string) {
 		t.Skipf("overlay backend unavailable: %v", err)
 	}
 	defer b.Remove(context.Background(), ws)
-	cmd, _ := b.Command(context.Background(), ws, []string{"true"})
+	cmd, err := b.Command(context.Background(), ws, []string{"true"})
+	if err != nil {
+		t.Skipf("overlay backend unavailable: %v", err)
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Skipf("overlay backend unavailable: %v: %s", err, out)
 	}
