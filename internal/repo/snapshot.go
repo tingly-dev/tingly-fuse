@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,21 +82,7 @@ func reflinkCopy(ctx context.Context, src, dst string) error {
 // absorbModules handles the gitdirs of submodules under .git/modules: each
 // one's objects go to the per-URL module mirror.
 func (r *Repo) absorbModules(ctx context.Context, modules string) error {
-	if _, err := os.Stat(modules); err != nil {
-		return nil
-	}
-	var dirs []string
-	err := filepath.WalkDir(modules, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return err
-		}
-		if _, e := os.Stat(filepath.Join(p, "HEAD")); e == nil {
-			if _, e := os.Stat(filepath.Join(p, "objects")); e == nil {
-				dirs = append(dirs, p)
-			}
-		}
-		return nil
-	})
+	dirs, err := findGitDirs(modules)
 	if err != nil {
 		return err
 	}
@@ -119,7 +104,7 @@ func (r *Repo) absorbModules(ctx context.Context, modules string) error {
 
 // ensureEmptyModuleMirror creates a module mirror without cloning, so the
 // objects found in a prepared directory seed it. ensureModuleMirror later
-// fetches into it with the same refspec a --mirror clone would have used.
+// fetches into it.
 func (r *Repo) ensureEmptyModuleMirror(ctx context.Context, url string) (string, error) {
 	mirror := r.moduleMirror(url)
 	if _, err := os.Stat(mirror); err == nil {
@@ -137,11 +122,13 @@ func (r *Repo) ensureEmptyModuleMirror(ctx context.Context, url string) (string,
 	for _, args := range [][]string{
 		{"init", "--quiet", "--bare", m},
 		{"-C", m, "remote", "add", "origin", url},
-		{"-C", m, "config", "remote.origin.fetch", "+refs/*:refs/*"},
 	} {
 		if _, err := gitx.Run(ctx, tmp, args...); err != nil {
 			return "", err
 		}
+	}
+	if err := setModuleRefspec(ctx, m); err != nil {
+		return "", err
 	}
 	if err := os.Rename(m, mirror); err != nil {
 		if _, statErr := os.Stat(mirror); statErr != nil {

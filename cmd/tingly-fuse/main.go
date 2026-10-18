@@ -19,7 +19,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
 	_ "github.com/tingly-dev/tingly-fuse/internal/backend/clone"
@@ -31,7 +33,12 @@ import (
 const usage = `usage:
   tingly-fuse repo add <name> <upstream>   register a repository
   tingly-fuse repo list [-v]               list registered repositories (-v: session and base counts)
+  tingly-fuse repo fetch <name>            update the repository's mirror from upstream
+  tingly-fuse repo check <name> [--fix]    verify every base is pinned and has all its objects
   tingly-fuse repo remove <name> [--force] delete a repository (--force drops its sessions)
+  tingly-fuse base list <repo>             list bases with their sessions
+  tingly-fuse base rm <repo> <id>          delete a base no session uses (id may be a unique prefix)
+  tingly-fuse base prune <repo> [--dry-run] delete every base no session uses
   tingly-fuse spawn <repo> [flags]         create a session and print its id
   tingly-fuse exec <session> -- <cmd>...   run a command inside a session's view
   tingly-fuse push <session> [flags]       push the session's branch
@@ -74,6 +81,8 @@ func run(ctx context.Context, args []string) error {
 	switch cmd {
 	case "repo":
 		return runRepo(ctx, m, args)
+	case "base":
+		return runBase(ctx, m, args)
 	case "spawn":
 		return runSpawn(ctx, m, args)
 	case "exec":
@@ -112,6 +121,18 @@ func runRepo(ctx context.Context, m *manager.Manager, args []string) error {
 			return err
 		}
 		return runRepoList(m, *verbose)
+	case len(args) == 2 && args[0] == "fetch":
+		return m.FetchRepo(ctx, args[1])
+	case len(args) >= 2 && args[0] == "check":
+		fs := flag.NewFlagSet("repo check", flag.ContinueOnError)
+		fix := fs.Bool("fix", false, "pin bases that are not pinned yet")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("usage: tingly-fuse repo check <name> [--fix]")
+		}
+		return runRepoCheck(ctx, m, args[1], *fix)
 	case len(args) >= 2 && args[0] == "remove":
 		fs := flag.NewFlagSet("repo remove", flag.ContinueOnError)
 		force := fs.Bool("force", false, "drop the repository's sessions first (unpushed work is lost)")
@@ -123,7 +144,7 @@ func runRepo(ctx context.Context, m *manager.Manager, args []string) error {
 		}
 		return m.RemoveRepo(ctx, args[1], *force)
 	default:
-		return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> | repo list [-v] | repo remove <name> [--force]")
+		return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> | repo list [-v] | repo fetch <name> | repo check <name> [--fix] | repo remove <name> [--force]")
 	}
 }
 
@@ -159,12 +180,83 @@ func runRepoList(m *manager.Manager, verbose bool) error {
 	return w.Flush()
 }
 
+func runBase(ctx context.Context, m *manager.Manager, args []string) error {
+	const usage = "usage: tingly-fuse base list <repo> | base rm <repo> <id> | base prune <repo> [--dry-run]"
+	switch {
+	case len(args) == 2 && args[0] == "list":
+		bases, err := m.Bases(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "BASE\tHEAD\tCREATED\tPINNED\tSESSIONS")
+		for _, b := range bases {
+			sessions := strings.Join(b.Sessions, ",")
+			if sessions == "" {
+				sessions = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%s\n", b.ID, shortBase(b.Head), b.Created.UTC().Format(time.RFC3339), b.Pinned, sessions)
+		}
+		return w.Flush()
+	case len(args) == 3 && args[0] == "rm":
+		return m.RemoveBase(ctx, args[1], args[2])
+	case len(args) >= 2 && args[0] == "prune":
+		fs := flag.NewFlagSet("base prune", flag.ContinueOnError)
+		dryRun := fs.Bool("dry-run", false, "only list the bases that would be deleted")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New(usage)
+		}
+		pruned, err := m.PruneBases(ctx, args[1], *dryRun)
+		for _, id := range pruned {
+			fmt.Println(id)
+		}
+		return err
+	default:
+		return errors.New(usage)
+	}
+}
+
+func runRepoCheck(ctx context.Context, m *manager.Manager, name string, fix bool) error {
+	bases, err := m.CheckRepo(ctx, name, fix)
+	if err != nil {
+		return err
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "BASE\tSESSIONS\tPINNED\tOBJECTS")
+	bad := 0
+	for _, b := range bases {
+		state := "ok"
+		if b.Err != nil {
+			state = "MISSING"
+			bad++
+		}
+		if !b.Pinned {
+			bad++
+		}
+		fmt.Fprintf(w, "%s\t%d\t%v\t%s\n", shortBase(b.ID), b.Sessions, b.Pinned, state)
+	}
+	w.Flush()
+	for _, b := range bases {
+		if b.Err != nil {
+			fmt.Fprintf(os.Stderr, "\n%s:\n%v\n", b.ID, b.Err)
+		}
+	}
+	if bad > 0 {
+		return fmt.Errorf("%d problem(s) found", bad)
+	}
+	return nil
+}
+
 func runSpawn(ctx context.Context, m *manager.Manager, args []string) error {
 	fs := flag.NewFlagSet("spawn", flag.ContinueOnError)
 	var opts manager.SpawnOptions
 	fs.StringVar(&opts.From, "from", "", "revision to start from (default: upstream HEAD)")
 	fs.StringVar(&opts.FromDir, "from-dir", "", "snapshot this prepared checkout (dependencies installed, built) as the base")
 	fs.StringVar(&opts.Base, "base", "", "reuse an existing base by id (see repo list -v), e.g. one made by --from-dir")
+	fs.BoolVar(&opts.NoFetch, "no-fetch", false, "resolve --from against the local mirror without fetching first")
 	fs.StringVar(&opts.ID, "id", "", "session id (default: random)")
 	fs.StringVar(&opts.Branch, "branch", "", "branch to create (default: agent/<id>)")
 	fs.StringVar(&opts.Backend, "backend", "", fmt.Sprintf("view backend %v (default %q)", backend.Names(), backend.Default))

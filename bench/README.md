@@ -76,3 +76,19 @@ BENCH_WARM_BASE=1 BENCH_METHODS="copy reflink overlay" bench/bench.sh run
 ```
 
 注意：Go 缓存按路径命中，复跑时会话路径和上一轮相同就会直接命中。要测"新路径冷构建"，先换 `BENCH_FS` 或清掉 `GOCACHE` 里的对应条目（最简单是 `go clean -cache`，但之后要重新预热依赖）。
+
+## base 生命周期（[lifecycle.sh](lifecycle.sh)，[决策 0008](../.design/decisions/0008-pin-base-objects-in-mirrors.md)）
+
+端到端验证 base 在上游改写历史、镜像 gc 之后是否还能用。脚本把仓库 `--mirror` 到本地当 upstream，建三个会话（`--from main`、`--from topic`、`--from-dir` 一个含未推送提交、stash、暂存文件的目录），然后删掉 topic、force-push 改写 main，对所有镜像 `fetch --prune` 加 `gc --prune=now`，最后在每个会话里跑 `git status` 和 `git fsck`（含子模块）。`TF_OLD` 可以指定旧版本，用它建 base、再用当前版本 `repo check --fix`，验证升级路径。
+
+2026-10-18，tingly-box（`5f83f04`，3 个子模块），Linux 云容器：
+
+| 运行 | 结果 |
+|---|---|
+| 对照：PR #7 之前的版本，不修复（`FIX=0`） | topic 和 `--from-dir` 会话 `fatal: bad object HEAD`；main 会话 `fsck` 报 `refs/remotes/origin/topic` 指向缺失对象；`spawn --base` 复用旧 topic base 失败 |
+| 升级：旧版本建 base，新版本 `repo check --fix`，overlay 后端 | 修复前 3 个 base 都报未固定；`--fix` 1.4 秒；gc 后三个会话 `fsck` 全部通过，`spawn --base` 和 `--from main`（拿到改写后的 main）都正常；镜像里共 40 个固定 ref |
+| 只用新版本，copy 后端 | 同上，全部通过 |
+
+回收：最后 drop 掉除 main 外的会话，`base prune` 删掉 topic 的 base 和 `--from-dir` 快照，再 gc，仓库目录从约 443 MB 降到约 294 MB，main 会话 `fsck` 仍然通过。最初版本的脚本还发现 `base` 子命令参数解析有错，单元测试没覆盖到 CLI。
+
+固定 ref 的数量：最初每个 ref 单独复制一份，3 个 base 在镜像里留下约 5500 个 ref（tingly-box 每个 gitdir 带约 900 个远端跟踪分支和 tag）；改成把指向 commit 的 ref 收进 keep commit 的 parent 之后是 40 个。

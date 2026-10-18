@@ -124,6 +124,11 @@ tingly-fuse spawn tingly-box --base dir-…                # more sessions reuse
 |---|---|
 | `repo add <name> <upstream>` | Register a repository and create its shared mirror |
 | `repo list [-v]` | List repositories; `-v` adds session and base counts |
+| `repo fetch <name>` | Update the mirror from upstream |
+| `repo check <name> [--fix]` | Check that every base is pinned against gc and still has all its objects; `--fix` pins old bases |
+| `base list <repo>` | List bases with their head commit, creation time, pin state and the sessions using them |
+| `base rm <repo> <id>` | Delete a base no session uses (`id` may be a unique prefix); git gc then reclaims objects only it needed |
+| `base prune <repo> [--dry-run]` | Delete every base no session uses, such as old `--from-dir` snapshots |
 | `repo remove <name> [--force]` | Delete the mirror and all bases; `--force` drops the repo's sessions first |
 | `spawn <repo> [flags]` | Create a session and print its id |
 | `exec <session> -- <cmd> [args...]` | Run a command inside the session's view |
@@ -135,7 +140,8 @@ tingly-fuse spawn tingly-box --base dir-…                # more sessions reuse
 
 | Flag | Meaning |
 |---|---|
-| `--from <rev>` | Revision to start from (default: upstream `HEAD`) |
+| `--from <rev>` | Revision to start from (default: upstream `HEAD`). Anything but a full commit id is fetched first, so `main` means upstream's main now |
+| `--no-fetch` | Resolve `--from` against the mirror as it is (offline, or to keep using the commit already there) |
 | `--from-dir <dir>` | Snapshot a prepared checkout as the base |
 | `--base <id>` | Reuse an existing base (the id `spawn` prints as `base:`, or the BASE column of `list`) |
 | `--branch <name>` | Branch to create (default `agent/<id>`) |

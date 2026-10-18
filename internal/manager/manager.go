@@ -87,6 +87,7 @@ type SpawnOptions struct {
 	From    string // revision to start from; default HEAD of the mirror
 	FromDir string // prepared checkout to snapshot as the base (instead of From)
 	Base    string // existing base id to reuse (instead of From or FromDir)
+	NoFetch bool   // resolve From against the mirror as is, fetching only if it is unknown
 	ID      string // optional; random when empty
 	Branch  string // optional; agent/<id> when empty
 	Backend string // optional; backend.Default when empty
@@ -103,6 +104,12 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 	if err != nil {
 		return nil, err
 	}
+	// Keep the chosen base from being removed until the session is saved.
+	unlock, err := r.LockBases(false)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	n := 0
 	for _, set := range []bool{opts.From != "", opts.FromDir != "", opts.Base != ""} {
 		if set {
@@ -133,12 +140,18 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 			head = h
 		}
 	default:
-		if sha, err = r.Resolve(ctx, orDefault(opts.From, "HEAD")); err != nil {
+		if sha, err = r.Resolve(ctx, orDefault(opts.From, "HEAD"), !opts.NoFetch); err != nil {
 			return nil, err
 		}
 		if baseDir, err = r.EnsureBase(ctx, sha); err != nil {
 			return nil, err
 		}
+	}
+
+	// Pin before any view uses the base, so a gc in the mirrors can never
+	// take objects out from under it. This also repairs older bases.
+	if err := r.PinBase(ctx, sha); err != nil {
+		return nil, err
 	}
 
 	id := opts.ID
@@ -177,6 +190,185 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		return nil, err
 	}
 	return sess, nil
+}
+
+// FetchRepo updates the repository's mirror from upstream.
+func (m *Manager) FetchRepo(ctx context.Context, name string) error {
+	r, err := repo.Open(m.Home, name)
+	if err != nil {
+		return err
+	}
+	return r.Fetch(ctx)
+}
+
+// BaseInfo describes one base of a repository.
+type BaseInfo struct {
+	ID       string
+	Head     string // commit the base is at
+	Created  time.Time
+	Sessions []string // ids of the sessions layered on it
+	Pinned   bool     // its objects are protected from gc in the mirrors
+}
+
+// Bases lists the repository's bases with the sessions that use them.
+func (m *Manager) Bases(ctx context.Context, name string) ([]BaseInfo, error) {
+	r, err := repo.Open(m.Home, name)
+	if err != nil {
+		return nil, err
+	}
+	return m.bases(ctx, r, false)
+}
+
+// bases lists r's bases. With strict set it fails when a session's metadata
+// is unreadable, since that session may use any of them.
+func (m *Manager) bases(ctx context.Context, r *repo.Repo, strict bool) ([]BaseInfo, error) {
+	ids, err := r.Bases()
+	if err != nil {
+		return nil, err
+	}
+	sessions, unreadable, err := m.sessions.ListStrict()
+	if err != nil {
+		return nil, err
+	}
+	if strict && len(unreadable) > 0 {
+		return nil, fmt.Errorf("cannot tell which bases sessions %v use: their session.json is unreadable; fix or drop them first", unreadable)
+	}
+	pinned, err := r.PinnedBases(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []BaseInfo
+	for _, id := range ids {
+		b := BaseInfo{ID: id}
+		if fi, err := os.Stat(r.BaseDir(id)); err == nil {
+			b.Created = fi.ModTime()
+		}
+		b.Head, _ = r.ReadHead(ctx, id)
+		for _, s := range sessions {
+			if s.Repo == r.Name && s.Base == id {
+				b.Sessions = append(b.Sessions, s.ID)
+			}
+		}
+		b.Pinned = pinned[id]
+		out = append(out, b)
+	}
+	return out, nil
+}
+
+// RemoveBase deletes one base, named by its id or a unique prefix of it.
+// It refuses while sessions use the base.
+func (m *Manager) RemoveBase(ctx context.Context, name, id string) error {
+	r, err := repo.Open(m.Home, name)
+	if err != nil {
+		return err
+	}
+	unlock, err := r.LockBases(true)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	bases, err := m.bases(ctx, r, true)
+	if err != nil {
+		return err
+	}
+	var match []BaseInfo
+	for _, b := range bases {
+		if b.ID == id {
+			match = []BaseInfo{b}
+			break
+		}
+		if strings.HasPrefix(b.ID, id) {
+			match = append(match, b)
+		}
+	}
+	switch {
+	case id == "" || len(match) == 0:
+		return fmt.Errorf("repo %q has no base %q (see base list)", name, id)
+	case len(match) > 1:
+		return fmt.Errorf("base %q is ambiguous in repo %q", id, name)
+	case len(match[0].Sessions) > 0:
+		return fmt.Errorf("base %s is used by sessions %v; drop them first", match[0].ID, match[0].Sessions)
+	}
+	return r.RemoveBase(ctx, match[0].ID)
+}
+
+// PruneBases deletes every base no session uses and returns their ids;
+// with dryRun set it only returns them.
+func (m *Manager) PruneBases(ctx context.Context, name string, dryRun bool) ([]string, error) {
+	r, err := repo.Open(m.Home, name)
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := r.LockBases(true)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if !dryRun {
+		// Finish removals an earlier run was interrupted in.
+		if err := r.SweepRemoved(); err != nil {
+			return nil, err
+		}
+	}
+	bases, err := m.bases(ctx, r, true)
+	if err != nil {
+		return nil, err
+	}
+	var pruned []string
+	for _, b := range bases {
+		if len(b.Sessions) > 0 {
+			continue
+		}
+		if !dryRun {
+			if err := r.RemoveBase(ctx, b.ID); err != nil {
+				return pruned, err
+			}
+		}
+		pruned = append(pruned, b.ID)
+	}
+	return pruned, nil
+}
+
+// BaseHealth is the state of one base as CheckRepo sees it.
+type BaseHealth struct {
+	ID       string
+	Sessions int
+	Pinned   bool  // its objects are protected from gc in the mirrors
+	Err      error // fsck failure: objects it needs are missing
+}
+
+// CheckRepo reports, for every base of the repository, whether it is pinned
+// and whether git can still reach every object it needs. With fix set it
+// pins unpinned bases first; it cannot bring back objects already gone.
+func (m *Manager) CheckRepo(ctx context.Context, name string, fix bool) ([]BaseHealth, error) {
+	r, err := repo.Open(m.Home, name)
+	if err != nil {
+		return nil, err
+	}
+	// Keep bases from being removed while they are checked or pinned.
+	unlock, err := r.LockBases(false)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	bases, err := m.bases(ctx, r, false)
+	if err != nil {
+		return nil, err
+	}
+	var out []BaseHealth
+	for _, b := range bases {
+		h := BaseHealth{ID: b.ID, Sessions: len(b.Sessions), Pinned: b.Pinned}
+		var pinErr error
+		if fix && !b.Pinned {
+			pinErr = r.PinBase(ctx, b.ID)
+			if h.Pinned, err = r.Pinned(ctx, b.ID); err != nil {
+				return nil, err
+			}
+		}
+		h.Err = errors.Join(pinErr, r.Fsck(ctx, b.ID))
+		out = append(out, h)
+	}
+	return out, nil
 }
 
 // Session loads a session by id.

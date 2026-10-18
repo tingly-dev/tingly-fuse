@@ -7,14 +7,26 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
 
 // Run executes git with args in dir and returns trimmed stdout.
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
+	return RunWith(ctx, dir, nil, "", args...)
+}
+
+// RunWith is Run with extra environment variables and stdin.
+func RunWith(ctx context.Context, dir string, env []string, stdin string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
