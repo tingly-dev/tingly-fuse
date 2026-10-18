@@ -101,6 +101,17 @@ step "spawn --from main follows upstream" sh -c "
 	'$TF_NEW' spawn r --id fresh $backend >/dev/null 2>&1 &&
 	'$TF_NEW' exec fresh -- test -e REWRITTEN"
 
+# Reclaim: drop everything but one session, prune, gc, and the survivor is fine.
+size() { du -sk "$TINGLY_FUSE_HOME/repos/r" | cut -f1; }
+for s in topic dir again; do "$TF_NEW" drop "$s" >/dev/null 2>&1 || true; done
+before=$(size)
+step "base prune --dry-run" "$TF_NEW" base prune r --dry-run
+step "base prune" "$TF_NEW" base prune r
+step "gc after prune" gc_all
+step "fsck session main after prune" fsck_session main
+step "repo check after prune" "$TF_NEW" repo check r
+echo "repo dir: ${before} KB before prune, $(size) KB after; bases left: $(ls "$TINGLY_FUSE_HOME/repos/r/bases" | wc -l)"
+
 echo "pinned refs: $(for m in "$TINGLY_FUSE_HOME"/repos/r/objects.git "$TINGLY_FUSE_HOME"/repos/r/modules/*.git; do git -C "$m" for-each-ref refs/tingly/ | wc -l; done | paste -sd+ | bc)"
 for s in $("$TF_NEW" list | awk 'NR > 1 { print $1 }'); do "$TF_NEW" drop "$s" >/dev/null 2>&1 || true; done
 rm -rf "$work"

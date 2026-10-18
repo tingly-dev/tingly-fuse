@@ -19,7 +19,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
 	_ "github.com/tingly-dev/tingly-fuse/internal/backend/clone"
@@ -34,6 +36,9 @@ const usage = `usage:
   tingly-fuse repo fetch <name>            update the repository's mirror from upstream
   tingly-fuse repo check <name> [--fix]    verify every base is pinned and has all its objects
   tingly-fuse repo remove <name> [--force] delete a repository (--force drops its sessions)
+  tingly-fuse base list <repo>             list bases with their sessions
+  tingly-fuse base rm <repo> <id>          delete a base no session uses (id may be a unique prefix)
+  tingly-fuse base prune <repo> [--dry-run] delete every base no session uses
   tingly-fuse spawn <repo> [flags]         create a session and print its id
   tingly-fuse exec <session> -- <cmd>...   run a command inside a session's view
   tingly-fuse push <session> [flags]       push the session's branch
@@ -76,6 +81,8 @@ func run(ctx context.Context, args []string) error {
 	switch cmd {
 	case "repo":
 		return runRepo(ctx, m, args)
+	case "base":
+		return runBase(ctx, m, args)
 	case "spawn":
 		return runSpawn(ctx, m, args)
 	case "exec":
@@ -171,6 +178,45 @@ func runRepoList(m *manager.Manager, verbose bool) error {
 		fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", r.Name, perRepo[r.Name], len(bases), r.Upstream)
 	}
 	return w.Flush()
+}
+
+func runBase(ctx context.Context, m *manager.Manager, args []string) error {
+	const usage = "usage: tingly-fuse base list <repo> | base rm <repo> <id> | base prune <repo> [--dry-run]"
+	switch {
+	case len(args) == 2 && args[0] == "list":
+		bases, err := m.Bases(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "BASE\tHEAD\tCREATED\tPINNED\tSESSIONS")
+		for _, b := range bases {
+			sessions := strings.Join(b.Sessions, ",")
+			if sessions == "" {
+				sessions = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%s\n", b.ID, shortBase(b.Head), b.Created.UTC().Format(time.RFC3339), b.Pinned, sessions)
+		}
+		return w.Flush()
+	case len(args) == 3 && args[0] == "rm":
+		return m.RemoveBase(ctx, args[1], args[2])
+	case len(args) >= 2 && args[0] == "prune":
+		fs := flag.NewFlagSet("base prune", flag.ContinueOnError)
+		dryRun := fs.Bool("dry-run", false, "only list the bases that would be deleted")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New(usage)
+		}
+		pruned, err := m.PruneBases(ctx, args[1], *dryRun)
+		for _, id := range pruned {
+			fmt.Println(id)
+		}
+		return err
+	default:
+		return errors.New(usage)
+	}
 }
 
 func runRepoCheck(ctx context.Context, m *manager.Manager, name string, fix bool) error {

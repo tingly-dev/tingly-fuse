@@ -9,8 +9,10 @@ package manager_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tingly-dev/tingly-fuse/internal/manager"
@@ -290,5 +292,121 @@ func TestCheckRepoFindsAndRepairsUnpinnedBases(t *testing.T) {
 	git(t, mirror, "-c", "gc.pruneExpire=now", "gc", "--quiet", "--prune=now")
 	if health, _ = m.CheckRepo(ctx, "demo", false); health[0].Err == nil {
 		t.Error("missing objects not reported")
+	}
+}
+
+func TestRemoveAndPruneBases(t *testing.T) {
+	m, upstream := setup(t)
+	ctx := context.Background()
+	main, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitTo(t, upstream, "topic", "topic.txt", "topic\n", false)
+	topic, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "topic", From: "topic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A prepared directory with an object only it has.
+	prep := filepath.Join(t.TempDir(), "prep")
+	git(t, filepath.Dir(prep), "clone", "--quiet", upstream, prep)
+	os.WriteFile(filepath.Join(prep, "only-here.txt"), []byte("only here\n"), 0o644)
+	git(t, prep, "add", ".")
+	git(t, prep, "commit", "--quiet", "-m", "only here")
+	onlyHere := git(t, prep, "rev-parse", "HEAD")
+	dir, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "dir", FromDir: prep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirror := mirrors(t, m, "demo")[0]
+
+	if err := m.RemoveBase(ctx, "demo", topic.Base); err == nil || !strings.Contains(err.Error(), "topic") {
+		t.Fatalf("removing a base in use: err = %v, want refusal naming the session", err)
+	}
+	if err := m.RemoveBase(ctx, "demo", "nope"); err == nil {
+		t.Error("removing an unknown base succeeded")
+	}
+	for _, id := range []string{"topic", "dir"} {
+		if err := m.Drop(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := m.PruneBases(ctx, "demo", true); len(got) != 2 {
+		t.Errorf("dry run = %v, want the topic and dir bases", got)
+	}
+	if bases, _ := m.Bases(ctx, "demo"); len(bases) != 3 {
+		t.Fatalf("dry run removed bases: %+v", bases)
+	}
+	pruned, err := m.PruneBases(ctx, "demo", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 2 {
+		t.Errorf("pruned = %v", pruned)
+	}
+	bases, _ := m.Bases(ctx, "demo")
+	if len(bases) != 1 || bases[0].ID != main.Base || bases[0].Sessions[0] != "main" {
+		t.Fatalf("bases after prune = %+v", bases)
+	}
+	if refs := git(t, mirror, "for-each-ref", "--format=%(refname)", "refs/tingly/"); strings.Contains(refs, topic.Base) || strings.Contains(refs, dir.Base) {
+		t.Errorf("pins of pruned bases left behind:\n%s", refs)
+	}
+
+	// With the pins gone, gc reclaims what only the pruned base needed,
+	// and the remaining session is untouched.
+	git(t, mirror, "-c", "gc.pruneExpire=now", "gc", "--quiet", "--prune=now")
+	if _, err := exec.Command("git", "-C", mirror, "cat-file", "-e", onlyHere).CombinedOutput(); err == nil {
+		t.Error("object only the pruned base needed survived gc")
+	}
+	fsckView(t, m, "main")
+
+	// Prefixes work, and the last base can go once its session is dropped.
+	if err := m.Drop(ctx, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RemoveBase(ctx, "demo", main.Base[:8]); err != nil {
+		t.Fatal(err)
+	}
+	if bases, _ := m.Bases(ctx, "demo"); len(bases) != 0 {
+		t.Errorf("bases = %+v", bases)
+	}
+}
+
+// Prune running alongside spawns must never delete a base a session ends
+// up on.
+func TestPruneDoesNotRaceSpawn(t *testing.T) {
+	m, _ := setup(t)
+	ctx := context.Background()
+	seed, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "seed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Drop(ctx, "seed"); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			// Either finds the base (and keeps it) or finds it pruned and
+			// rebuilds it from the commit.
+			m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", From: seed.Base})
+		}()
+		go func() {
+			defer wg.Done()
+			m.PruneBases(ctx, "demo", false)
+		}()
+	}
+	wg.Wait()
+	sessions, _ := m.Sessions()
+	if len(sessions) != 8 {
+		t.Errorf("%d of 8 spawns succeeded", len(sessions))
+	}
+	for _, s := range sessions {
+		if _, err := os.Stat(filepath.Join(m.Home, "repos", "demo", "bases", s.Base)); err != nil {
+			t.Errorf("session %s lost its base: %v", s.ID, err)
+		}
+		fsckView(t, m, s.ID)
 	}
 }

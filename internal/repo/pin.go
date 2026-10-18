@@ -95,15 +95,82 @@ func (r *Repo) Fsck(ctx context.Context, id string) error {
 // lock serializes pinning within the repository: concurrent update-ref on
 // the same refs would otherwise fail on each other's lock files.
 func (r *Repo) lock() (func(), error) {
-	f, err := os.OpenFile(filepath.Join(r.dir, ".lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	return flock(filepath.Join(r.dir, ".pin.lock"), syscall.LOCK_EX)
+}
+
+// LockBases guards the set of bases. Spawn holds it shared from choosing a
+// base until its session is saved; removing bases holds it exclusively, so
+// a base is never deleted between a spawn picking it and the session that
+// records it.
+func (r *Repo) LockBases(exclusive bool) (func(), error) {
+	how := syscall.LOCK_SH
+	if exclusive {
+		how = syscall.LOCK_EX
+	}
+	return flock(filepath.Join(r.dir, ".bases.lock"), how)
+}
+
+func flock(path string, how int) (func(), error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscall.Flock(int(f.Fd()), how); err != nil {
 		f.Close()
 		return nil, err
 	}
 	return func() { f.Close() }, nil
+}
+
+// RemoveBase deletes base id and its pins in every mirror, after which the
+// mirrors' gc may reclaim objects nothing else needs. Callers hold
+// LockBases exclusively and have checked that no session uses the base.
+func (r *Repo) RemoveBase(ctx context.Context, id string) error {
+	if id == "" || strings.ContainsAny(id, `/\`) || strings.HasPrefix(id, ".") {
+		return fmt.Errorf("invalid base id %q", id)
+	}
+	dir := r.BaseDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("repo %q has no base %q", r.Name, id)
+	}
+	// Move it out of sight first: a half-deleted base must never be found.
+	trash, err := os.MkdirTemp(filepath.Join(r.dir, "bases"), ".tmp-rm-")
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(dir, filepath.Join(trash, "tree")); err != nil {
+		os.Remove(trash)
+		return err
+	}
+	mirrors, _ := filepath.Glob(filepath.Join(r.ModulesDir(), "*.git"))
+	for _, m := range append([]string{r.ObjectsDir()}, mirrors...) {
+		refs, err := gitx.Run(ctx, m, "for-each-ref", "--format=delete %(refname)", pinPrefix+id+"/")
+		if err != nil {
+			return err
+		}
+		if refs == "" {
+			continue
+		}
+		if _, err := gitx.RunWith(ctx, m, nil, refs+"\n", "update-ref", "--stdin"); err != nil {
+			return err
+		}
+	}
+	return removeAll(trash)
+}
+
+// removeAll is os.RemoveAll that also copes with read-only directories,
+// which prepared directories (Go's module cache, for one) can contain.
+func removeAll(dir string) error {
+	if err := os.RemoveAll(dir); err == nil {
+		return nil
+	}
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			os.Chmod(p, 0o755)
+		}
+		return nil
+	})
+	return os.RemoveAll(dir)
 }
 
 type gitDir struct{ gitdir, label string }

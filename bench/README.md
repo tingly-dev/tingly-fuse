@@ -89,4 +89,6 @@ BENCH_WARM_BASE=1 BENCH_METHODS="copy reflink overlay" bench/bench.sh run
 | 升级：旧版本建 base，新版本 `repo check --fix`，overlay 后端 | 修复前 3 个 base 都报未固定；`--fix` 1.4 秒；gc 后三个会话 `fsck` 全部通过，`spawn --base` 和 `--from main`（拿到改写后的 main）都正常；镜像里共 40 个固定 ref |
 | 只用新版本，copy 后端 | 同上，全部通过 |
 
+回收：最后 drop 掉除 main 外的会话，`base prune` 删掉 topic 的 base 和 `--from-dir` 快照，再 gc，仓库目录从约 443 MB 降到约 294 MB，main 会话 `fsck` 仍然通过。最初版本的脚本还发现 `base` 子命令参数解析有错，单元测试没覆盖到 CLI。
+
 固定 ref 的数量：最初每个 ref 单独复制一份，3 个 base 在镜像里留下约 5500 个 ref（tingly-box 每个 gitdir 带约 900 个远端跟踪分支和 tag）；改成把指向 commit 的 ref 收进 keep commit 的 parent 之后是 40 个。
