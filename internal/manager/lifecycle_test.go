@@ -434,7 +434,9 @@ func testPruneDoesNotRaceSpawn(t *testing.T) {
 
 // A base that already lost objects must not be pinned in a way that keeps
 // gc from ever running in the mirror again; check reports it instead.
-func TestPinningSkipsMissingObjects(t *testing.T) {
+func TestPinningSkipsMissingObjects(t *testing.T) { eachBackend(t, testPinningSkipsMissingObjects) }
+
+func testPinningSkipsMissingObjects(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
 	prep := filepath.Join(t.TempDir(), "prep")
@@ -464,7 +466,9 @@ func TestPinningSkipsMissingObjects(t *testing.T) {
 }
 
 // Many sessions started at once, each fetching first, must all succeed.
-func TestConcurrentSpawnsFetchSafely(t *testing.T) {
+func TestConcurrentSpawnsFetchSafely(t *testing.T) { eachBackend(t, testConcurrentSpawnsFetchSafely) }
+
+func testConcurrentSpawnsFetchSafely(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
 	next := commitTo(t, upstream, "main", "next.txt", "next\n", false)
@@ -494,6 +498,10 @@ func TestConcurrentSpawnsFetchSafely(t *testing.T) {
 // A session whose metadata cannot be read still counts as using a base:
 // removal must refuse rather than guess.
 func TestPruneRefusesWithUnreadableSession(t *testing.T) {
+	eachBackend(t, testPruneRefusesWithUnreadableSession)
+}
+
+func testPruneRefusesWithUnreadableSession(t *testing.T) {
 	m, _ := setup(t)
 	ctx := context.Background()
 	s, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a"})
