@@ -23,10 +23,16 @@ import (
 // objects a base still needs. Every base therefore pins, in each mirror it
 // borrows from, everything its gitdirs point at:
 //
-//	refs/tingly/bases/<id>/<label>/r/<ref>  each ref of the gitdir
 //	refs/tingly/bases/<id>/<label>/keep     a commit whose tree is the index
-//	                                        and whose parents are HEAD and
-//	                                        every commit in the reflogs
+//	                                        and whose parents are HEAD, every
+//	                                        ref pointing at a commit and every
+//	                                        commit in the reflogs
+//	refs/tingly/bases/<id>/<label>/r/<ref>  each ref pointing at anything else
+//	                                        (annotated tags), which a commit
+//	                                        cannot have as a parent
+//
+// Folding commit refs into keep matters: a base of tingly-box carries about
+// 900 remote-tracking branches and tags per gitdir.
 //
 // label is "root" for the base's own .git and m-<hash> for a submodule
 // gitdir. The root keep ref is written last and marks the base as pinned.
@@ -209,6 +215,9 @@ func pinGitDir(ctx context.Context, gitdir, id, label string) error {
 	}
 	args := []string{"commit-tree", tree, "-m", "tingly-fuse: keep objects of base " + id + " (" + label + ")"}
 	seen := map[string]bool{}
+	for _, w := range want {
+		commits = append(commits, w.sha)
+	}
 	for _, c := range commits {
 		if types[c] == "commit" && !seen[c] {
 			seen[c] = true
@@ -226,7 +235,7 @@ func pinGitDir(ctx context.Context, gitdir, id, label string) error {
 
 	var stdin strings.Builder
 	for _, w := range want {
-		if types[w.sha] != "" {
+		if t := types[w.sha]; t != "" && t != "commit" {
 			fmt.Fprintf(&stdin, "update %s %s\n", pinRef(id, label, "r/"+w.name), w.sha)
 		}
 	}

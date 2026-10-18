@@ -18,8 +18,8 @@ fetch 会触发 `gc --auto`，不可达对象过了保留期（默认两周）�
 ## 决定
 
 1. **每个 base 在它借用的每个镜像里固定自己需要的对象**，ref 放在 `refs/tingly/bases/<id>/<label>/` 下，`label` 是 `root` 或 `m-<子模块 gitdir 相对路径的哈希>`：
-   - `r/<原 ref 名>`：base 的 gitdir 里每个 ref（分支、远端跟踪分支、tag、stash）原样复制一份；
-   - `keep`：一个合成的 commit，tree 是 index 里所有条目（冲突的条目按 stage 加后缀保留），parent 是 HEAD 和 reflog 里出现过的所有 commit。
+   - `keep`：一个合成的 commit，tree 是 index 里所有条目（冲突的条目按 stage 加后缀保留），parent 是 HEAD、gitdir 里每个指向 commit 的 ref（分支、远端跟踪分支、轻量 tag、stash）以及 reflog 里出现过的所有 commit；
+   - `r/<原 ref 名>`：指向非 commit 对象的 ref（附注 tag），commit 不能把它们当 parent，只好逐个复制。
 2. **root 的 `keep` 最后写，作为"已固定"的标记。** `PinBase` 有标记就直接返回，否则在仓库级 flock 下固定。`spawn` 每次都调用它，所以修复前建的 base 在下次被用时自动补上。
 3. **子模块镜像的 refspec 改为只管 `refs/heads/*` 和 `refs/tags/*`**，`fetch --prune` 不再碰 `refs/tingly/`。创建、fetch 前、固定时都会设置，旧镜像也会被改过来。
 4. **`--from` 除完整 commit id 外都先 fetch 再解析**；fetch 失败直接报错并提示 `--no-fetch`，不悄悄退回旧值。
@@ -28,8 +28,8 @@ fetch 会触发 `gc --auto`，不可达对象过了保留期（默认两周）�
 ## 理由
 
 - 固定 ref 是 git 自己认的根，不用改 gc 配置，也不用 `gc.auto=0` 关掉回收（那样镜像会无限增长）。
-- 复制 base 的全部 ref 而不只是 HEAD：视图里的 `origin/*`、本地分支、stash 指向缺失对象时，`git log`、`fetch` 协商、`fsck` 都会出错。
-- reflog 和 index 用一个合成 commit 收拢，避免成千上万个 ref；index 里的 blob 不在任何 commit 里，只能靠 tree 固定。
+- 固定 base 的全部 ref 而不只是 HEAD：视图里的 `origin/*`、本地分支、stash 指向缺失对象时，`git log`、`fetch` 协商、`fsck` 都会出错。
+- 指向 commit 的 ref、reflog 和 index 用一个合成 commit 收拢：tingly-box 的一个 base 每个 gitdir 带约 900 个远端跟踪分支和 tag，逐个复制时 3 个 base 就在镜像里留下约 5500 个 ref，收拢后每个 gitdir 只剩 1 个 keep 加几个附注 tag。index 里的 blob 不在任何 commit 里，只能靠 tree 固定。
 - 每个 base 一组前缀，将来 `base prune` 删 base 时一并删掉这组 ref，镜像的 gc 就能回收它独占的对象（[issue #6](https://github.com/tingly-dev/tingly-fuse/issues/6)）。
 
 ## 被放弃的选项
@@ -41,7 +41,7 @@ fetch 会触发 `gc --auto`，不可达对象过了保留期（默认两周）�
 
 ## 后果
 
-- 每个 base 首次使用时多一次固定：tingly-box（4 个 gitdir，主镜像约 860 个 ref）约 0.5 秒；之后每次 spawn 只多一次 `rev-parse`。
-- 镜像里 ref 数量随 base 数线性增长；`clone --shared` 和 fetch 只取 `refs/heads/*`（和 tag），不受影响。
+- 每个 base 首次使用时多一次固定：tingly-box（4 个 gitdir）约 0.5 秒；之后每次 spawn 只多一次 `rev-parse`。
+- 镜像里每个 base 每个 gitdir 多 1 个 keep ref 和若干附注 tag ref；`clone --shared` 和 fetch 只取 `refs/heads/*`（和 tag），不受影响。
 - 默认 `spawn` 需要能访问 upstream；离线时用 `--no-fetch` 或完整 commit id。
 - 固定只保护 base 里的东西。会话自己新建的对象写在会话目录（overlay 的 upper、copy/clone 的视图）里，不依赖镜像。
