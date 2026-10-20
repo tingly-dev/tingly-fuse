@@ -48,7 +48,12 @@ func New(home string) *Manager {
 
 // AddRepo registers a repository.
 func (m *Manager) AddRepo(ctx context.Context, name, upstream string) (*repo.Repo, error) {
-	return repo.Add(ctx, m.Home, name, upstream)
+	return m.AddRepoWith(ctx, name, upstream, repo.AddOptions{})
+}
+
+// AddRepoWith is AddRepo with registration options, such as shared git.
+func (m *Manager) AddRepoWith(ctx context.Context, name, upstream string, opts repo.AddOptions) (*repo.Repo, error) {
+	return repo.Add(ctx, m.Home, name, upstream, opts)
 }
 
 // RemoveRepo unregisters a repository and deletes its mirror and bases.
@@ -162,15 +167,30 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		return nil, err
 	}
 	ws := backend.Workspace{ID: id, Repo: r.Name, BaseDir: baseDir, StateDir: m.sessions.Dir(id)}
+	sharedGitDir := ""
 	defer func() {
 		if err != nil {
 			_ = b.Remove(context.WithoutCancel(ctx), ws)
+			if sharedGitDir != "" {
+				_ = r.RemoveSessionGitDir(id)
+			}
 			_ = m.sessions.Delete(id)
 		}
 	}()
 
 	if ws.ViewPath, err = b.Create(ctx, ws); err != nil {
 		return nil, fmt.Errorf("create view: %w", err)
+	}
+	if r.SharedGit {
+		if sharedGitDir, err = r.AddSessionGitDir(ctx, id, baseDir, ws.ViewPath); err != nil {
+			return nil, fmt.Errorf("shared git: %w", err)
+		}
+		// Only a process inside the view can change it (overlay), so the
+		// switch from the base's .git to the shared one runs there.
+		link := []string{"sh", "-c", `rm -rf .git && ln -s "$1" .git`, "sh", sharedGitDir}
+		if err = m.run(ctx, b, ws, &session.Session{ID: id, Repo: r.Name}, link, nil, io.Discard, nil); err != nil {
+			return nil, fmt.Errorf("shared git: link .git: %w", err)
+		}
 	}
 	sess = &session.Session{
 		ID:        id,
@@ -396,13 +416,21 @@ func (m *Manager) Push(ctx context.Context, id, remote string, stdout, stderr io
 	return m.run(ctx, b, ws, sess, argv, nil, stdout, stderr)
 }
 
-// Drop removes the session's view and metadata. Unpushed work is lost.
+// Drop removes the session's view and metadata. Unpushed work is lost,
+// except with shared git, where the session's branch and commits stay in
+// the shared repository.
 func (m *Manager) Drop(ctx context.Context, id string) error {
-	_, b, ws, err := m.load(id)
+	sess, b, ws, err := m.load(id)
 	if err != nil {
 		return err
 	}
-	return errors.Join(b.Remove(ctx, ws), m.sessions.Delete(id))
+	errs := []error{b.Remove(ctx, ws)}
+	if r, rerr := repo.Open(m.Home, sess.Repo); rerr != nil {
+		errs = append(errs, rerr)
+	} else if r.SharedGit {
+		errs = append(errs, r.RemoveSessionGitDir(id))
+	}
+	return errors.Join(append(errs, m.sessions.Delete(id))...)
 }
 
 func (m *Manager) load(id string) (*session.Session, backend.Backend, backend.Workspace, error) {

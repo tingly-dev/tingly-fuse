@@ -122,7 +122,7 @@ tingly-fuse spawn tingly-box --base dir-…                # more sessions reuse
 
 | Command | What it does |
 |---|---|
-| `repo add <name> <upstream>` | Register a repository and create its shared mirror |
+| `repo add <name> <upstream> [--shared-git]` | Register a repository and create its shared mirror; `--shared-git` makes every session a worktree of one shared repository, so branches and commits are visible to all sessions ([ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)) |
 | `repo list [-v]` | List repositories; `-v` adds session and base counts |
 | `repo fetch <name>` | Update the mirror from upstream |
 | `repo check <name> [--fix]` | Check that every base is pinned against gc and still has all its objects; `--fix` pins old bases |

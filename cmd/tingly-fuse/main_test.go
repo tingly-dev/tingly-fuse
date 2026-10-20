@@ -121,6 +121,20 @@ func TestCommands(t *testing.T) {
 		t.Errorf("repo list -v:\n%s", out)
 	}
 	c.ok("repo", "fetch", "demo")
+	c.fails(1, []string{"usage: tingly-fuse repo add"}, "repo", "add", "shared", upstream, "extra")
+	c.ok("repo", "add", "shared", upstream, "--shared-git")
+	if out := c.ok("repo", "list", "-v"); !strings.Contains(out, "shared") || !strings.Contains(out, "private") {
+		t.Errorf("repo list -v does not tell shared and private git apart:\n%s", out)
+	}
+	c.ok("spawn", "shared", "--id", "s1", "--backend", "copy")
+	c.ok("spawn", "shared", "--id", "s2", "--backend", "copy")
+	c.ok("exec", "s1", "--", "git", "commit", "--quiet", "--allow-empty", "-m", "from-s1")
+	if out := c.ok("exec", "s2", "--", "git", "log", "-1", "--format=%s", "agent/s1"); strings.TrimSpace(out) != "from-s1" {
+		t.Errorf("s2 does not see s1's branch: %q", out)
+	}
+	c.ok("drop", "s1")
+	c.ok("drop", "s2")
+	c.ok("repo", "remove", "shared")
 
 	if out := c.ok("spawn", "demo", "--id", "a", "--branch", "feature/a", "--backend", "copy"); !strings.HasPrefix(out, "a\n") || !strings.Contains(out, "branch: feature/a") {
 		t.Errorf("spawn output:\n%s", out)

@@ -1,7 +1,7 @@
 // Command tingly-fuse gives many agents private, copy-on-write views of one
 // git repository.
 //
-//	tingly-fuse repo add <name> <upstream>
+//	tingly-fuse repo add <name> <upstream> [--shared-git]
 //	tingly-fuse repo list [-v]
 //	tingly-fuse repo remove <name> [--force]
 //	tingly-fuse spawn <repo> [--from rev | --from-dir dir | --base id] [--id id] [--branch b] [--backend name]
@@ -28,10 +28,12 @@ import (
 	_ "github.com/tingly-dev/tingly-fuse/internal/backend/fullcopy"
 	_ "github.com/tingly-dev/tingly-fuse/internal/backend/overlay"
 	"github.com/tingly-dev/tingly-fuse/internal/manager"
+	"github.com/tingly-dev/tingly-fuse/internal/repo"
 )
 
 const usage = `usage:
-  tingly-fuse repo add <name> <upstream>   register a repository
+  tingly-fuse repo add <name> <upstream>   register a repository (--shared-git: sessions share
+                                           branches, commits and config; see ADR 0010)
   tingly-fuse repo list [-v]               list registered repositories (-v: session and base counts)
   tingly-fuse repo fetch <name>            update the repository's mirror from upstream
   tingly-fuse repo check <name> [--fix]    verify every base is pinned and has all its objects
@@ -107,8 +109,16 @@ func run(ctx context.Context, args []string) error {
 
 func runRepo(ctx context.Context, m *manager.Manager, args []string) error {
 	switch {
-	case len(args) == 3 && args[0] == "add":
-		r, err := m.AddRepo(ctx, args[1], args[2])
+	case len(args) >= 3 && args[0] == "add":
+		fs := flag.NewFlagSet("repo add", flag.ContinueOnError)
+		shared := fs.Bool("shared-git", false, "make every session a worktree of one shared repository: branches, commits and config are visible to all sessions")
+		if err := fs.Parse(args[3:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> [--shared-git]")
+		}
+		r, err := m.AddRepoWith(ctx, args[1], args[2], repo.AddOptions{SharedGit: *shared})
 		if err != nil {
 			return err
 		}
@@ -144,7 +154,7 @@ func runRepo(ctx context.Context, m *manager.Manager, args []string) error {
 		}
 		return m.RemoveRepo(ctx, args[1], *force)
 	default:
-		return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> | repo list [-v] | repo fetch <name> | repo check <name> [--fix] | repo remove <name> [--force]")
+		return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> [--shared-git] | repo list [-v] | repo fetch <name> | repo check <name> [--fix] | repo remove <name> [--force]")
 	}
 }
 
@@ -169,13 +179,17 @@ func runRepoList(m *manager.Manager, verbose bool) error {
 	for _, s := range sessions {
 		perRepo[s.Repo]++
 	}
-	fmt.Fprintln(w, "NAME\tSESSIONS\tBASES\tUPSTREAM")
+	fmt.Fprintln(w, "NAME\tSESSIONS\tBASES\tGIT\tUPSTREAM")
 	for _, r := range repos {
 		bases, err := r.Bases()
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", r.Name, perRepo[r.Name], len(bases), r.Upstream)
+		git := "private"
+		if r.SharedGit {
+			git = "shared"
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\n", r.Name, perRepo[r.Name], len(bases), git, r.Upstream)
 	}
 	return w.Flush()
 }

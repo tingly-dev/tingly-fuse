@@ -8,6 +8,8 @@
 //	repos/<name>/objects.git    bare mirror, the only place objects live
 //	repos/<name>/bases/<sha>/   checkout of <sha>; .git uses alternates
 //	                            into objects.git and is never written to
+//	repos/<name>/shared.git     with SharedGit only: refs, config and new
+//	                            objects every session shares (sharedgit.go)
 package repo
 
 import (
@@ -30,6 +32,9 @@ var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 type Repo struct {
 	Name     string `json:"name"`
 	Upstream string `json:"upstream"`
+	// SharedGit makes every session a worktree of one shared repository
+	// instead of giving each its own .git (ADR 0010). Fixed at Add.
+	SharedGit bool `json:"shared_git,omitempty"`
 
 	dir string
 }
@@ -45,12 +50,17 @@ func (r *Repo) BaseDir(sha string) string { return filepath.Join(r.dir, "bases",
 
 func reposDir(home string) string { return filepath.Join(home, "repos") }
 
+// AddOptions are the settings a repository is registered with.
+type AddOptions struct {
+	SharedGit bool
+}
+
 // Add registers upstream under name and mirrors it into a bare object store.
-func Add(ctx context.Context, home, name, upstream string) (*Repo, error) {
+func Add(ctx context.Context, home, name, upstream string, opts AddOptions) (*Repo, error) {
 	if !validName.MatchString(name) {
 		return nil, fmt.Errorf("invalid repo name %q", name)
 	}
-	r := &Repo{Name: name, Upstream: upstream, dir: filepath.Join(reposDir(home), name)}
+	r := &Repo{Name: name, Upstream: upstream, SharedGit: opts.SharedGit, dir: filepath.Join(reposDir(home), name)}
 	if _, err := os.Stat(r.dir); err == nil {
 		return nil, fmt.Errorf("repo %q already registered", name)
 	}
@@ -67,6 +77,12 @@ func Add(ctx context.Context, home, name, upstream string) (*Repo, error) {
 	if _, err := gitx.Run(ctx, r.ObjectsDir(), "config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"); err != nil {
 		cleanup()
 		return nil, err
+	}
+	if r.SharedGit {
+		if err := r.initShared(ctx); err != nil {
+			cleanup()
+			return nil, err
+		}
 	}
 	data, _ := json.MarshalIndent(r, "", "  ")
 	if err := os.WriteFile(filepath.Join(r.dir, "repo.json"), data, 0o644); err != nil {
@@ -149,6 +165,11 @@ func (r *Repo) Bases() ([]string, error) {
 // Concurrent calls share one fetch: a call that waited on another one
 // started after it does not fetch again.
 func (r *Repo) Fetch(ctx context.Context) error {
+	if r.SharedGit {
+		if err := r.syncSharedRefs(ctx); err != nil {
+			return fmt.Errorf("sync shared refs into mirror: %w", err)
+		}
+	}
 	return fetchMirror(ctx, r.ObjectsDir(), time.Now())
 }
 
