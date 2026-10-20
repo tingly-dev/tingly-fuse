@@ -167,11 +167,6 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 	if err != nil {
 		return nil, err
 	}
-	shares, err := r.EnsureShares(ctx, baseDir, shared)
-	if err != nil {
-		return nil, err
-	}
-
 	id := opts.ID
 	if id == "" {
 		id = session.NewID()
@@ -179,7 +174,7 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 	if err := m.sessions.Reserve(id); err != nil {
 		return nil, err
 	}
-	ws := backend.Workspace{ID: id, Repo: r.Name, BaseDir: baseDir, StateDir: m.sessions.Dir(id), Shares: toBackendShares(shares)}
+	ws := backend.Workspace{ID: id, Repo: r.Name, BaseDir: baseDir, StateDir: m.sessions.Dir(id)}
 	sharedGitDir := ""
 	defer func() {
 		if err != nil {
@@ -191,6 +186,12 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		}
 	}()
 
+	// Seeding a share is permanent, so it waits until the id is ours.
+	var shares []repo.Share
+	if shares, err = r.EnsureShares(ctx, baseDir, shared); err != nil {
+		return nil, err
+	}
+	ws.Shares = toBackendShares(shares)
 	if ws.ViewPath, err = b.Create(ctx, ws); err != nil {
 		return nil, fmt.Errorf("create view: %w", err)
 	}
@@ -204,6 +205,9 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		if err = m.run(ctx, b, ws, &session.Session{ID: id, Repo: r.Name}, link, nil, io.Discard, nil); err != nil {
 			return nil, fmt.Errorf("shared git: link .git: %w", err)
 		}
+	}
+	if err = m.excludeShares(ctx, b, ws, id, r.Name, shares); err != nil {
+		return nil, fmt.Errorf("exclude shared paths: %w", err)
 	}
 	sess = &session.Session{
 		ID:        id,
@@ -472,6 +476,27 @@ func (m *Manager) load(id string) (*session.Session, backend.Backend, backend.Wo
 	}
 	return sess, b, ws, nil
 }
+
+// excludeShares adds each untracked shared path to the view's
+// info/exclude, so a session never commits shared content. A symlinked
+// share (copy, clone) is a file to git, which a directory-only rule such
+// as "node_modules/" in .gitignore would not match.
+func (m *Manager) excludeShares(ctx context.Context, b backend.Backend, ws backend.Workspace, id, repoName string, shares []repo.Share) error {
+	var patterns []string
+	for _, s := range shares {
+		if !s.Tracked {
+			patterns = append(patterns, "/"+globEscaper.Replace(s.Path))
+		}
+	}
+	if len(patterns) == 0 {
+		return nil
+	}
+	script := `f=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$f")" && for p; do grep -qxF -- "$p" "$f" 2>/dev/null || printf '%s\n' "$p" >> "$f"; done`
+	argv := append([]string{"sh", "-c", script, "sh"}, patterns...)
+	return m.run(ctx, b, ws, &session.Session{ID: id, Repo: repoName}, argv, nil, io.Discard, nil)
+}
+
+var globEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`)
 
 func toBackendShares(shares []repo.Share) []backend.Share {
 	var out []backend.Share

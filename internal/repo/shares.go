@@ -126,32 +126,103 @@ func (r *Repo) save() error {
 // EnsureShares makes sure every path in paths has its shared copy, seeding
 // a missing one from baseDir: a copy of the base's directory or file there,
 // or an empty directory when the base has nothing at that path.
+//
+// Shared copies nest on disk (shares/a/b is inside shares/a), so a path
+// is refused when it is inside, or contains, a path that already has a
+// shared copy, even one no longer shared: they would see each other's
+// content.
 func (r *Repo) EnsureShares(ctx context.Context, baseDir string, paths []string) ([]Share, error) {
 	if len(paths) == 0 {
 		return nil, nil
 	}
-	unlock, err := flock(filepath.Join(r.dir, ".shares.lock"), true)
+	roots, err := r.shareRoots()
 	if err != nil {
 		return nil, err
 	}
-	defer unlock()
-	var out []Share
+	if err := checkRoots(roots, paths); err != nil {
+		return nil, err
+	}
+	var missing []string
 	for _, p := range paths {
-		src := r.ShareSource(p)
-		if _, err := os.Lstat(src); errors.Is(err, os.ErrNotExist) {
-			if err := r.seedShare(ctx, baseDir, p, src); err != nil {
-				return nil, fmt.Errorf("seed shared path %s: %w", p, err)
-			}
-		} else if err != nil {
-			return nil, err
+		if !slices.Contains(roots, p) {
+			missing = append(missing, p)
 		}
-		tracked, err := gitx.Run(ctx, baseDir, "ls-files", "--", p)
+	}
+	if len(missing) > 0 {
+		unlock, err := flock(filepath.Join(r.dir, ".shares.lock"), true)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, Share{Path: p, Source: src, Tracked: tracked != ""})
+		defer unlock()
+		if roots, err = r.shareRoots(); err != nil {
+			return nil, err
+		}
+		if err := checkRoots(roots, paths); err != nil {
+			return nil, err
+		}
+		for _, p := range missing {
+			if slices.Contains(roots, p) {
+				continue // seeded by a spawn we waited for
+			}
+			if err := r.seedShare(ctx, baseDir, p, r.ShareSource(p)); err != nil {
+				return nil, fmt.Errorf("seed shared path %s: %w", p, err)
+			}
+			roots = append(roots, p)
+			if err := r.saveShareRoots(roots); err != nil {
+				return nil, err
+			}
+		}
+	}
+	// Literal pathspecs: a shared path is a name, not a pattern.
+	files, err := gitx.Run(ctx, baseDir, "--literal-pathspecs", "ls-files", "-z", "--")
+	if err != nil {
+		return nil, err
+	}
+	tracked := strings.Split(files, "\x00")
+	var out []Share
+	for _, p := range paths {
+		s := Share{Path: p, Source: r.ShareSource(p)}
+		s.Tracked = slices.ContainsFunc(tracked, func(f string) bool { return f == p || strings.HasPrefix(f, p+"/") })
+		out = append(out, s)
 	}
 	return out, nil
+}
+
+// checkRoots refuses paths nested in, or containing, an existing copy.
+func checkRoots(roots, paths []string) error {
+	for _, p := range paths {
+		for _, q := range roots {
+			if strings.HasPrefix(p, q+"/") || strings.HasPrefix(q, p+"/") {
+				return fmt.Errorf("shared path %s overlaps %s, which already has a shared copy under %s", p, q, "shares/")
+			}
+		}
+	}
+	return nil
+}
+
+// shareRoots lists the paths that have a shared copy, seeded or not still
+// shared, from shares/index.json.
+func (r *Repo) shareRoots() ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(r.dir, "shares", "index.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var roots []string
+	if err := json.Unmarshal(data, &roots); err != nil {
+		return nil, fmt.Errorf("read shares/index.json: %w", err)
+	}
+	return roots, nil
+}
+
+func (r *Repo) saveShareRoots(roots []string) error {
+	data, _ := json.MarshalIndent(roots, "", "  ")
+	tmp := filepath.Join(r.dir, "shares", "index.json.tmp")
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(r.dir, "shares", "index.json"))
 }
 
 func (r *Repo) seedShare(ctx context.Context, baseDir, p, src string) error {

@@ -93,8 +93,7 @@ func Add(ctx context.Context, home, name, upstream string, opts AddOptions) (*Re
 			return nil, err
 		}
 	}
-	data, _ := json.MarshalIndent(r, "", "  ")
-	if err := os.WriteFile(filepath.Join(r.dir, "repo.json"), data, 0o644); err != nil {
+	if err := r.save(); err != nil {
 		cleanup()
 		return nil, err
 	}

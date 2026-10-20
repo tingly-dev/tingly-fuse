@@ -35,6 +35,10 @@ func testSharedPaths(t *testing.T) {
 	if got := execIn(t, m, "b", "cat", "cache/x", "build/out/o"); got != "hi\no" {
 		t.Errorf("b reads %q", got)
 	}
+	// Shared content never gets committed by accident.
+	if got := execIn(t, m, "b", "sh", "-c", "git add -A && git status --porcelain"); got != "" {
+		t.Errorf("shared paths are not excluded from git: %q", got)
+	}
 	execIn(t, m, "b", "sh", "-c", "rm cache/x && mkdir cache/d && echo y > cache/d/y")
 	if got := execIn(t, m, "a", "sh", "-c", "ls cache; cat cache/d/y"); got != "d\ny" {
 		t.Errorf("a sees %q", got)
@@ -212,6 +216,13 @@ func testSpawnShares(t *testing.T) {
 	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "d", Share: []string{"cache/sub"}}); err == nil || !strings.Contains(err.Error(), "overlap") {
 		t.Errorf("spawn sharing a path inside a shared one: %v", err)
 	}
+	// Shared copies nest on disk, so a path inside (or around) one that
+	// already has a copy is refused, even when no session shares both.
+	for _, p := range []string{"logs/x", "tmp/y/z"} {
+		if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "e", Share: []string{p}}); err == nil || !strings.Contains(err.Error(), "already has a shared copy") {
+			t.Errorf("spawn sharing %s inside an existing copy: %v", p, err)
+		}
+	}
 	if s, _ := m.Session("a"); strings.Join(s.Shared, ",") != "cache,logs,out,tmp" {
 		t.Errorf("a shares %v", s.Shared)
 	}
@@ -221,5 +232,31 @@ func testSpawnShares(t *testing.T) {
 	}
 	if got := execIn(t, m, "c", "sh", "-c", "cat cache/c out/o; ls tmp logs 2>/dev/null | wc -l"); got != "c\no\n0" {
 		t.Errorf("c sees %q", got)
+	}
+}
+
+func TestShareKindMismatch(t *testing.T) { eachBackend(t, testShareKindMismatch) }
+
+// A share seeded as a directory (the first base had nothing there) stays
+// one: a base that has a file at that path fails to spawn instead of
+// having its file replaced.
+func testShareKindMismatch(t *testing.T) {
+	m, upstream := setup(t)
+	ctx := context.Background()
+	if _, err := m.SetShares("demo", []string{".env"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "prepared")
+	git(t, filepath.Dir(dir), "clone", "--quiet", upstream, dir)
+	os.WriteFile(filepath.Join(dir, ".env"), []byte("KEY=1\n"), 0o644)
+	_, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", FromDir: dir, ID: "b"})
+	if err == nil || !strings.Contains(err.Error(), "disagree on whether it is a directory") {
+		t.Fatalf("spawn with a file where the share is a directory: %v", err)
+	}
+	if sessions, _ := m.Sessions(); len(sessions) != 1 {
+		t.Errorf("failed spawn left sessions: %d", len(sessions))
 	}
 }

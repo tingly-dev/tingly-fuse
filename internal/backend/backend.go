@@ -125,6 +125,18 @@ func LinkShares(view string, shares []Share) error {
 		if err != nil {
 			return err
 		}
+		sfi, err := os.Stat(s.Source)
+		if err != nil {
+			return err
+		}
+		if dfi, err := os.Lstat(dst); err == nil {
+			switch {
+			case dfi.Mode()&os.ModeSymlink != 0:
+				return fmt.Errorf("share %s: it is a symlink in the base", s.Path)
+			case dfi.IsDir() != sfi.IsDir():
+				return fmt.Errorf("share %s: the base and the shared copy disagree on whether it is a directory", s.Path)
+			}
+		}
 		if err := os.RemoveAll(dst); err != nil {
 			return err
 		}

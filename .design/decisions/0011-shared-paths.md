@@ -19,7 +19,9 @@
    - `.git` 和 `.git/` 下的路径拒绝，提示用 `repo add --shared-git`：会话必须有自己的 HEAD 和 index，`.git` 的共享方式见 [0010](0010-shared-git-via-registered-worktrees.md)。
    - 绝对路径、`..`、互相嵌套的两个路径拒绝。
    - copy、clone 后端上，git 跟踪着的路径拒绝：git 会把符号链接看成被跟踪的内容被替换了，agent 一提交就会把它从上游删掉。overlay 上允许，改动会出现在每个会话的 `git status` 里。
-   - 视图里路径上有符号链接、或者 base 和共享副本一个是文件一个是目录，spawn 失败。
+   - 视图里路径上有符号链接、或者 base 和共享副本一个是文件一个是目录，spawn 失败（所有后端都检查，copy 和 clone 不会悄悄把文件换成链接）。
+   - 共享副本在磁盘上会嵌套（`shares/a/b` 在 `shares/a` 里），所以一个路径如果在某个已有副本之内或包含它，就拒绝，即使那个路径已经 unshare。有哪些副本记在 `shares/index.json`。
+6. **未被跟踪的共享路径写进视图的 `info/exclude`**（`/<path>`），会话 `git add -A` 不会把共享内容提交上去。copy 和 clone 下共享目录是符号链接，git 把它当成文件，`.gitignore` 里 `node_modules/` 这种只匹配目录的规则对它不起作用。
 
 ## 理由
 

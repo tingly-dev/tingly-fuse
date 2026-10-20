@@ -182,10 +182,11 @@ func (r *Repo) RemoveSessionGitDir(id string) error {
 // syncSharedRefs copies shared.git's refs into the mirror under
 // refs/tingly/shared/, with the few objects only shared.git has. Run before
 // every fetch into the mirror, whose auto gc would otherwise count only
-// upstream's refs and the base pins.
+// upstream's refs and the base pins. It must not touch FETCH_HEAD, which
+// fetchMirror reads as the time of the last upstream fetch.
 func (r *Repo) syncSharedRefs(ctx context.Context) error {
 	return withMirrorLock(r.ObjectsDir(), func() error {
-		_, err := gitx.Run(ctx, r.ObjectsDir(), "fetch", "--quiet", "--prune", "--no-auto-gc", r.SharedDir(), "+refs/*:"+sharedPrefix+"*")
+		_, err := gitx.Run(ctx, r.ObjectsDir(), "fetch", "--quiet", "--prune", "--no-auto-gc", "--no-write-fetch-head", r.SharedDir(), "+refs/*:"+sharedPrefix+"*")
 		return err
 	})
 }
