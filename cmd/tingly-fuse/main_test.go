@@ -136,6 +136,27 @@ func TestCommands(t *testing.T) {
 	c.ok("drop", "s2")
 	c.ok("repo", "remove", "shared")
 
+	c.fails(1, []string{"--shared-git"}, "repo", "share", "demo", ".git")
+	c.fails(1, []string{"usage: tingly-fuse repo unshare"}, "repo", "unshare", "demo")
+	if out := c.ok("repo", "share", "demo", "cache", "tmp"); out != "cache\ntmp" {
+		t.Errorf("repo share output: %q", out)
+	}
+	if out := c.ok("repo", "unshare", "demo", "tmp"); out != "cache" {
+		t.Errorf("repo unshare output: %q", out)
+	}
+	c.ok("spawn", "demo", "--id", "c1", "--backend", "copy")
+	c.ok("spawn", "demo", "--id", "c2", "--backend", "copy")
+	c.ok("exec", "c1", "--", "sh", "-c", "echo hi > cache/f")
+	if out := c.ok("exec", "c2", "--", "cat", "cache/f"); strings.TrimSpace(out) != "hi" {
+		t.Errorf("c2 does not see c1's shared cache: %q", out)
+	}
+	c.ok("drop", "c1")
+	c.ok("drop", "c2")
+	c.ok("repo", "unshare", "demo", "cache")
+	if out := c.ok("repo", "share", "demo"); out != "" {
+		t.Errorf("shares left: %q", out)
+	}
+
 	if out := c.ok("spawn", "demo", "--id", "a", "--branch", "feature/a", "--backend", "copy"); !strings.HasPrefix(out, "a\n") || !strings.Contains(out, "branch: feature/a") {
 		t.Errorf("spawn output:\n%s", out)
 	}

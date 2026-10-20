@@ -13,8 +13,11 @@ package backend
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -34,6 +37,20 @@ type Workspace struct {
 	// ViewPath is where processes started through Command see the tree.
 	// Set by Create and persisted by the manager.
 	ViewPath string
+	// Shares are paths in the view that show a host directory or file
+	// instead of the base's copy, live and writable, so every session
+	// sharing it sees the others' changes at once.
+	Shares []Share
+}
+
+// Share is one shared path of a workspace.
+type Share struct {
+	// Path is relative to the view root, slash-separated, never .git.
+	Path string
+	// Source is the directory or file on the host every session sees.
+	Source string
+	// Tracked is set when git tracks something at Path in the base.
+	Tracked bool
 }
 
 // Backend creates, enters and removes a session's view.
@@ -94,3 +111,49 @@ func namesLocked() []string {
 // Default is the backend used when none is requested. Platform files may
 // override it from init.
 var Default = "copy"
+
+// LinkShares replaces each shared path in view with a symlink to its
+// source, for backends that cannot bind mount. Tracked paths are refused:
+// git would see the symlink as the tracked content being replaced, and an
+// agent committing that would delete it upstream.
+func LinkShares(view string, shares []Share) error {
+	for _, s := range shares {
+		if s.Tracked {
+			return fmt.Errorf("shared path %s is tracked by git, and this backend shares paths with symlinks, which git sees as replacing it; use the overlay backend or share untracked paths only", s.Path)
+		}
+		dst, err := InView(view, s.Path)
+		if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(dst); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.Symlink(s.Source, dst); err != nil {
+			return fmt.Errorf("share %s: %w", s.Path, err)
+		}
+	}
+	return nil
+}
+
+// InView returns where rel is under view, failing if any directory on the
+// way is a symlink, which could lead outside the view.
+func InView(view, rel string) (string, error) {
+	dir := view
+	parts := strings.Split(rel, "/")
+	for _, p := range parts[:len(parts)-1] {
+		dir = filepath.Join(dir, p)
+		fi, err := os.Lstat(dir)
+		if os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return "", err
+		}
+		if !fi.IsDir() {
+			return "", fmt.Errorf("shared path %s: %s is not a directory in the view", rel, strings.TrimPrefix(dir, view+string(filepath.Separator)))
+		}
+	}
+	return filepath.Join(view, filepath.FromSlash(rel)), nil
+}

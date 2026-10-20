@@ -159,6 +159,11 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		return nil, err
 	}
 
+	shares, err := r.EnsureShares(ctx, baseDir, r.SharedPaths)
+	if err != nil {
+		return nil, err
+	}
+
 	id := opts.ID
 	if id == "" {
 		id = session.NewID()
@@ -166,7 +171,7 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 	if err := m.sessions.Reserve(id); err != nil {
 		return nil, err
 	}
-	ws := backend.Workspace{ID: id, Repo: r.Name, BaseDir: baseDir, StateDir: m.sessions.Dir(id)}
+	ws := backend.Workspace{ID: id, Repo: r.Name, BaseDir: baseDir, StateDir: m.sessions.Dir(id), Shares: toBackendShares(shares)}
 	sharedGitDir := ""
 	defer func() {
 		if err != nil {
@@ -201,6 +206,7 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		Branch:    orDefault(opts.Branch, "agent/"+id),
 		Backend:   b.Name(),
 		ViewPath:  ws.ViewPath,
+		Shared:    r.SharedPaths,
 		CreatedAt: time.Now().UTC(),
 	}
 	if err = m.run(ctx, b, ws, sess, []string{"git", "switch", "--quiet", "--create", sess.Branch}, nil, io.Discard, nil); err != nil {
@@ -453,7 +459,24 @@ func (m *Manager) load(id string) (*session.Session, backend.Backend, backend.Wo
 		StateDir: m.sessions.Dir(sess.ID),
 		ViewPath: sess.ViewPath,
 	}
+	for _, p := range sess.Shared {
+		ws.Shares = append(ws.Shares, backend.Share{Path: p, Source: r.ShareSource(p)})
+	}
 	return sess, b, ws, nil
+}
+
+func toBackendShares(shares []repo.Share) []backend.Share {
+	var out []backend.Share
+	for _, s := range shares {
+		out = append(out, backend.Share{Path: s.Path, Source: s.Source, Tracked: s.Tracked})
+	}
+	return out
+}
+
+// SetShares adds or removes shared paths of a repository; see
+// repo.SetShares.
+func (m *Manager) SetShares(name string, paths []string, remove bool) (*repo.Repo, error) {
+	return repo.SetShares(m.Home, name, paths, remove)
 }
 
 func (m *Manager) run(ctx context.Context, b backend.Backend, ws backend.Workspace, sess *session.Session, argv []string, stdin io.Reader, stdout, stderr io.Writer) error {

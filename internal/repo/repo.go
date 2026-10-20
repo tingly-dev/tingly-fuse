@@ -10,6 +10,7 @@
 //	                            into objects.git and is never written to
 //	repos/<name>/shared.git     with SharedGit only: refs, config and new
 //	                            objects every session shares (sharedgit.go)
+//	repos/<name>/shares/<path>  the one copy of each shared path (shares.go)
 package repo
 
 import (
@@ -35,6 +36,9 @@ type Repo struct {
 	// SharedGit makes every session a worktree of one shared repository
 	// instead of giving each its own .git (ADR 0010). Fixed at Add.
 	SharedGit bool `json:"shared_git,omitempty"`
+	// SharedPaths are paths of the tree every new session shares with the
+	// others instead of getting its own copy (ADR 0011).
+	SharedPaths []string `json:"shared_paths,omitempty"`
 
 	dir string
 }

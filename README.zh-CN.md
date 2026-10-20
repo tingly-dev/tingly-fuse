@@ -126,6 +126,7 @@ tingly-fuse spawn tingly-box --base dir-…                # 之后的会话复�
 | `repo list [-v]` | 列出仓库；`-v` 加上会话数和 base 数 |
 | `repo fetch <name>` | 从 upstream 更新镜像 |
 | `repo check <name> [--fix]` | 检查每个 base 是否已固定（不会被 gc 清掉）、对象是否齐全；`--fix` 为旧 base 补上固定 |
+| `repo share <name> [path...]` / `repo unshare <name> <path>...` | 让所有新会话共享指定的目录或文件，例如缓存或 `.env`：宿主上一份，overlay 下 bind mount，copy 和 clone 下用符号链接；不带路径时列出（[ADR 0011](.design/decisions/0011-shared-paths.md)） |
 | `base list <repo>` | 列出 base：所在 commit、创建时间、是否已固定、哪些会话在用 |
 | `base rm <repo> <id>` | 删除没有会话在用的 base（`id` 可以是唯一前缀）；之后 git gc 会回收只有它需要的对象 |
 | `base prune <repo> [--dry-run]` | 删除所有没有会话在用的 base，比如旧的 `--from-dir` 快照 |

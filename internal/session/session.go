@@ -30,6 +30,7 @@ type Session struct {
 	Branch    string    `json:"branch"`           // branch created inside the view
 	Backend   string    `json:"backend"`          // backend name
 	ViewPath  string    `json:"view_path"`
+	Shared    []string  `json:"shared,omitempty"` // shared paths, fixed at spawn
 	CreatedAt time.Time `json:"created_at"`
 }
 

@@ -2,6 +2,8 @@
 // git repository.
 //
 //	tingly-fuse repo add <name> <upstream> [--shared-git]
+//	tingly-fuse repo share <name> [path...]
+//	tingly-fuse repo unshare <name> <path>...
 //	tingly-fuse repo list [-v]
 //	tingly-fuse repo remove <name> [--force]
 //	tingly-fuse spawn <repo> [--from rev | --from-dir dir | --base id] [--id id] [--branch b] [--backend name]
@@ -34,6 +36,8 @@ import (
 const usage = `usage:
   tingly-fuse repo add <name> <upstream>   register a repository (--shared-git: sessions share
                                            branches, commits and config; see ADR 0010)
+  tingly-fuse repo share <name> [path...]  share paths across new sessions (no path: list them)
+  tingly-fuse repo unshare <name> <path>... stop sharing paths in new sessions
   tingly-fuse repo list [-v]               list registered repositories (-v: session and base counts)
   tingly-fuse repo fetch <name>            update the repository's mirror from upstream
   tingly-fuse repo check <name> [--fix]    verify every base is pinned and has all its objects
@@ -143,6 +147,29 @@ func runRepo(ctx context.Context, m *manager.Manager, args []string) error {
 			return fmt.Errorf("usage: tingly-fuse repo check <name> [--fix]")
 		}
 		return runRepoCheck(ctx, m, args[1], *fix)
+	case len(args) >= 2 && (args[0] == "share" || args[0] == "unshare"):
+		remove := args[0] == "unshare"
+		if remove && len(args) == 2 {
+			return fmt.Errorf("usage: tingly-fuse repo unshare <name> <path>...")
+		}
+		var paths []string
+		if len(args) > 2 || remove {
+			r, err := m.SetShares(args[1], args[2:], remove)
+			if err != nil {
+				return err
+			}
+			paths = r.SharedPaths
+		} else {
+			r, err := repo.Open(m.Home, args[1])
+			if err != nil {
+				return err
+			}
+			paths = r.SharedPaths
+		}
+		for _, p := range paths {
+			fmt.Println(p)
+		}
+		return nil
 	case len(args) >= 2 && args[0] == "remove":
 		fs := flag.NewFlagSet("repo remove", flag.ContinueOnError)
 		force := fs.Bool("force", false, "drop the repository's sessions first (unpushed work is lost)")
@@ -154,7 +181,7 @@ func runRepo(ctx context.Context, m *manager.Manager, args []string) error {
 		}
 		return m.RemoveRepo(ctx, args[1], *force)
 	default:
-		return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> [--shared-git] | repo list [-v] | repo fetch <name> | repo check <name> [--fix] | repo remove <name> [--force]")
+		return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> [--shared-git] | repo share <name> [path...] | repo unshare <name> <path>... | repo list [-v] | repo fetch <name> | repo check <name> [--fix] | repo remove <name> [--force]")
 	}
 }
 
