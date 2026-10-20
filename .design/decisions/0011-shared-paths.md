@@ -9,7 +9,7 @@
 
 ## 决定
 
-1. **按仓库配置共享路径。** `repo share <repo> <path>...` 添加，`repo unshare <repo> <path>...` 移除，`repo share <repo>` 列出。存在 `repo.json` 的 `shared_paths` 里。路径相对于仓库根，可以是目录也可以是文件。
+1. **按仓库配置共享路径。** `repo share <repo> <path>...` 添加，`repo unshare <repo> <path>...` 移除，`repo share <repo>` 列出；也可以在 `repo add --share <path>`（可重复、可逗号分隔）时一并设置。存在 `repo.json` 的 `shared_paths` 里。路径相对于仓库根，可以是目录也可以是文件。`spawn --share <path>` 给单个会话再加共享路径：它和其他也带这个路径 spawn 的会话共用同一份副本，没带的会话照常私有。
 2. **每个共享路径在宿主上只有一份：`repos/<name>/shares/<path>`。** 第一次有会话带着它 spawn 时创建：base 里有这个路径就复制一份（reflink），没有就建一个空目录。之后 base 里的这份不再使用。要共享一个文件，它得出现在 base 里（例如 `--from-dir` 目录里的 `.env`），或者先放到 `shares/` 下。
 3. **怎么出现在视图里由后端决定。** `backend.Workspace` 新增 `Shares`。
    - overlay：holder 挂好 overlay 后，把每个共享路径 bind mount 到视图里的同一位置。路径不变（[0002](0002-same-path-private-view.md)），而且对挂载点的 rename 会报 `EBUSY`，工具"写临时文件再改名"时直接报错，不会悄悄把共享变回私有。holder 重启后重新挂。
@@ -29,7 +29,6 @@
 ## 被放弃的选项
 
 - **所有后端都用符号链接。** overlay 上能用 bind mount 保持路径一致、挡住 rename，没有理由降级。
-- **每个会话自己决定共享哪些路径。** 需求是"所有会话之间共享"。按会话分组共享（只有一部分会话共用）留到有需求再做。
 - **共享副本一直跟着 base 变。** 不同 base 的内容不同，跟着变就没有"同一份"可言。
 
 ## 后果

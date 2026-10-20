@@ -96,6 +96,10 @@ type SpawnOptions struct {
 	ID      string // optional; random when empty
 	Branch  string // optional; agent/<id> when empty
 	Backend string // optional; backend.Default when empty
+	// Share adds shared paths for this session on top of the repository's
+	// (see SetShares). It shares them with every other session that shares
+	// the same path, through the repository's one copy of it.
+	Share []string
 }
 
 // Spawn creates a session: a private view of the base commit with a new
@@ -159,7 +163,11 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		return nil, err
 	}
 
-	shares, err := r.EnsureShares(ctx, baseDir, r.SharedPaths)
+	shared, err := repo.MergeSharePaths(r.SharedPaths, opts.Share)
+	if err != nil {
+		return nil, err
+	}
+	shares, err := r.EnsureShares(ctx, baseDir, shared)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +214,7 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		Branch:    orDefault(opts.Branch, "agent/"+id),
 		Backend:   b.Name(),
 		ViewPath:  ws.ViewPath,
-		Shared:    r.SharedPaths,
+		Shared:    shared,
 		CreatedAt: time.Now().UTC(),
 	}
 	if err = m.run(ctx, b, ws, sess, []string{"git", "switch", "--quiet", "--create", sess.Branch}, nil, io.Discard, nil); err != nil {
@@ -471,6 +479,15 @@ func toBackendShares(shares []repo.Share) []backend.Share {
 		out = append(out, backend.Share{Path: s.Path, Source: s.Source, Tracked: s.Tracked})
 	}
 	return out
+}
+
+// Shares returns the paths a repository's new sessions share.
+func (m *Manager) Shares(name string) ([]string, error) {
+	r, err := repo.Open(m.Home, name)
+	if err != nil {
+		return nil, err
+	}
+	return r.SharedPaths, nil
 }
 
 // SetShares adds or removes shared paths of a repository; see

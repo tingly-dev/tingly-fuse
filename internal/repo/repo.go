@@ -56,7 +56,8 @@ func reposDir(home string) string { return filepath.Join(home, "repos") }
 
 // AddOptions are the settings a repository is registered with.
 type AddOptions struct {
-	SharedGit bool
+	SharedGit   bool
+	SharedPaths []string // see SetShares
 }
 
 // Add registers upstream under name and mirrors it into a bare object store.
@@ -64,7 +65,11 @@ func Add(ctx context.Context, home, name, upstream string, opts AddOptions) (*Re
 	if !validName.MatchString(name) {
 		return nil, fmt.Errorf("invalid repo name %q", name)
 	}
-	r := &Repo{Name: name, Upstream: upstream, SharedGit: opts.SharedGit, dir: filepath.Join(reposDir(home), name)}
+	shares, err := MergeSharePaths(nil, opts.SharedPaths)
+	if err != nil {
+		return nil, err
+	}
+	r := &Repo{Name: name, Upstream: upstream, SharedGit: opts.SharedGit, SharedPaths: shares, dir: filepath.Join(reposDir(home), name)}
 	if _, err := os.Stat(r.dir); err == nil {
 		return nil, fmt.Errorf("repo %q already registered", name)
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
 	"github.com/tingly-dev/tingly-fuse/internal/manager"
+	"github.com/tingly-dev/tingly-fuse/internal/repo"
 )
 
 func TestSharedPaths(t *testing.T) { eachBackend(t, testSharedPaths) }
@@ -179,5 +180,46 @@ func TestSharePathValidation(t *testing.T) {
 	}
 	if strings.Join(r.SharedPaths, ",") != "a,b" {
 		t.Errorf("shared paths = %v", r.SharedPaths)
+	}
+}
+
+func TestSpawnShares(t *testing.T) { eachBackend(t, testSpawnShares) }
+
+// Shares can be set when registering the repository and per spawn; a
+// per-spawn path is shared among the sessions spawned with it only.
+func testSpawnShares(t *testing.T) {
+	m, upstream := setup(t)
+	ctx := context.Background()
+	if _, err := m.AddRepoWith(ctx, "multi", upstream, repo.AddOptions{SharedPaths: []string{"cache", "../x"}}); err == nil {
+		t.Error("add accepted the path ../x")
+	}
+	r, err := m.AddRepoWith(ctx, "multi", upstream, repo.AddOptions{SharedPaths: []string{"out", "cache", "./cache"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(r.SharedPaths, ","); got != "cache,out" {
+		t.Errorf("shared paths at add = %s", got)
+	}
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "a", Share: []string{"tmp", "logs"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "b", Share: []string{"tmp"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "c"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "d", Share: []string{"cache/sub"}}); err == nil || !strings.Contains(err.Error(), "overlap") {
+		t.Errorf("spawn sharing a path inside a shared one: %v", err)
+	}
+	if s, _ := m.Session("a"); strings.Join(s.Shared, ",") != "cache,logs,out,tmp" {
+		t.Errorf("a shares %v", s.Shared)
+	}
+	execIn(t, m, "a", "sh", "-c", "echo t > tmp/t && echo l > logs/l && echo c > cache/c && echo o > out/o")
+	if got := execIn(t, m, "b", "sh", "-c", "cat tmp/t cache/c out/o; ls logs 2>/dev/null | wc -l"); got != "t\nc\no\n0" {
+		t.Errorf("b sees %q", got)
+	}
+	if got := execIn(t, m, "c", "sh", "-c", "cat cache/c out/o; ls tmp logs 2>/dev/null | wc -l"); got != "c\no\n0" {
+		t.Errorf("c sees %q", got)
 	}
 }

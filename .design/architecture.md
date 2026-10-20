@@ -34,7 +34,7 @@ sessions/<id>/...               后端私有状态（overlay 的 upper/work、ho
 | 命令 | 做什么 |
 |---|---|
 | `repo add/list/remove` | 登记仓库并建镜像（`--shared-git`：会话共享 refs 和新对象，见 [0010](decisions/0010-shared-git-via-registered-worktrees.md)）；列出（`-v` 带会话数和 base 数）；删除（`--force` 先 drop 它的会话） |
-| `repo share/unshare` | 设置所有新会话共享的目录或文件；不带路径时列出（[0011](decisions/0011-shared-paths.md)） |
+| `repo share/unshare` | 设置所有新会话共享的目录或文件；不带路径时列出；`repo add --share`、`spawn --share` 可在创建时一并设置（[0011](decisions/0011-shared-paths.md)） |
 | `base list/rm/prune` | 列出 base 及引用它的会话；删除没有会话引用的 base，连同它在镜像里的固定 ref；与 spawn 用 `.bases.lock` 互斥（[0009](decisions/0009-base-removal-by-session-refcount.md)） |
 | `repo fetch` / `repo check [--fix]` | 更新镜像；逐个 base 检查是否已固定、`git fsck` 是否通过（`--fix` 给旧 base 补固定）（[0008](decisions/0008-pin-base-objects-in-mirrors.md)） |
 | `spawn <repo> [--from rev \| --from-dir dir \| --base id]` | `--from-dir`：reflink 快照该目录并把其中对象并入镜像（[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)）；`--base`：复用已有 base；默认：解析 rev 得到 commit（除完整 commit id 外先 fetch，`--no-fetch` 跳过）；固定 base 的对象；确保该 commit 的 base 存在（并发安全，先建临时目录再 rename）；预留会话 id；后端 `Create` 出视图；在视图里建分支 `agent/<id>` |
@@ -44,6 +44,10 @@ sessions/<id>/...               后端私有状态（overlay 的 upper/work、ho
 | `list` | 列出会话 |
 
 `spawn` 失败时会回收已创建的一切（视图和会话目录），不留半成品。
+
+## Go API
+
+模块根目录的 `tinglyfuse` 包是对外接口，类型来自 `internal/manager` 等包的别名；命令行只通过它调用（[0012](decisions/0012-public-go-api.md)）。
 
 ## 后端契约
 

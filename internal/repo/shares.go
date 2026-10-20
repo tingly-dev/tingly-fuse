@@ -12,10 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/tingly-dev/tingly-fuse/internal/gitx"
@@ -63,8 +64,38 @@ func SetShares(home, name string, paths []string, remove bool) (*Repo, error) {
 	if r, err = Open(home, name); err != nil {
 		return nil, err
 	}
+	var out []string
+	if remove {
+		drop := map[string]bool{}
+		for _, p := range paths {
+			c, err := cleanSharePath(p)
+			if err != nil {
+				return nil, err
+			}
+			if !slices.Contains(r.SharedPaths, c) {
+				return nil, fmt.Errorf("%q is not shared", p)
+			}
+			drop[c] = true
+		}
+		for _, p := range r.SharedPaths {
+			if !drop[p] {
+				out = append(out, p)
+			}
+		}
+	} else if out, err = MergeSharePaths(r.SharedPaths, paths); err != nil {
+		return nil, err
+	}
+	r.SharedPaths = out
+	return r, r.save()
+}
+
+// MergeSharePaths validates paths and returns them together with have,
+// sorted and without duplicates. Two paths where one is inside the other
+// are refused: a bind mount or symlink for the inner one would land in the
+// outer one's shared copy.
+func MergeSharePaths(have, paths []string) ([]string, error) {
 	set := map[string]bool{}
-	for _, p := range r.SharedPaths {
+	for _, p := range have {
 		set[p] = true
 	}
 	for _, p := range paths {
@@ -72,25 +103,15 @@ func SetShares(home, name string, paths []string, remove bool) (*Repo, error) {
 		if err != nil {
 			return nil, err
 		}
-		if remove && !set[c] {
-			return nil, fmt.Errorf("%q is not shared", p)
-		}
-		set[c] = !remove
+		set[c] = true
 	}
-	var out []string
-	for p, on := range set {
-		if on {
-			out = append(out, p)
-		}
-	}
-	sort.Strings(out)
+	out := slices.Sorted(maps.Keys(set))
 	for i := 1; i < len(out); i++ {
 		if strings.HasPrefix(out[i], out[i-1]+"/") {
 			return nil, fmt.Errorf("shared paths %s and %s overlap", out[i-1], out[i])
 		}
 	}
-	r.SharedPaths = out
-	return r, r.save()
+	return out, nil
 }
 
 func (r *Repo) save() error {

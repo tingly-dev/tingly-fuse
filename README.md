@@ -122,7 +122,7 @@ tingly-fuse spawn tingly-box --base dir-…                # more sessions reuse
 
 | Command | What it does |
 |---|---|
-| `repo add <name> <upstream> [--shared-git]` | Register a repository and create its shared mirror; `--shared-git` makes every session a worktree of one shared repository, so branches and commits are visible to all sessions ([ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)) |
+| `repo add <name> <upstream> [--shared-git] [--share path]...` | Register a repository and create its shared mirror; `--share` sets shared paths right away (repeatable or comma-separated, same as `repo share`); `--shared-git` makes every session a worktree of one shared repository, so branches and commits are visible to all sessions ([ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)) |
 | `repo list [-v]` | List repositories; `-v` adds session and base counts |
 | `repo fetch <name>` | Update the mirror from upstream |
 | `repo check <name> [--fix]` | Check that every base is pinned against gc and still has all its objects; `--fix` pins old bases |
@@ -148,8 +148,27 @@ tingly-fuse spawn tingly-box --base dir-…                # more sessions reuse
 | `--branch <name>` | Branch to create (default `agent/<id>`) |
 | `--id <id>` | Session id (default: random) |
 | `--backend <name>` | `overlay`, `clone` or `copy` (default depends on the platform) |
+| `--share <path>` | Also share this path, on top of the repository's shared paths, with every other session spawned with it (repeatable or comma-separated) |
 
 If `spawn` fails partway, it cleans up everything it created.
+
+## Go API
+
+Everything the command does is callable from Go through the package at the module root; the command itself uses nothing else ([ADR 0012](.design/decisions/0012-public-go-api.md)).
+
+```go
+import tinglyfuse "github.com/tingly-dev/tingly-fuse"
+
+m, _ := tinglyfuse.Open("") // TINGLY_FUSE_HOME, or ~/.tingly-fuse
+m.AddRepoWith(ctx, "box", "https://github.com/tingly-dev/tingly-box",
+	tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{".cache"}})
+s, _ := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "box", Share: []string{"tmp"}})
+m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
+m.Push(ctx, s.ID, "", os.Stdout, os.Stderr)
+m.Drop(ctx, s.ID)
+```
+
+`tinglyfuse.CheckBackend(ctx, "overlay")` tells whether a backend can run on this host.
 
 ## Environment variables
 

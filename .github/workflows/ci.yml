@@ -45,6 +45,8 @@ jobs:
         run: |
           go test -c -race -o /tmp/manager.test ./internal/manager
           go test -c -race -o /tmp/overlay.test ./internal/backend/overlay
+          go test -c -race -o /tmp/api.test .
+          sudo /tmp/api.test -test.v -test.run . | grep -E '^(---|    ---|ok|PASS|FAIL)'
           sudo /tmp/overlay.test -test.v -test.run . | tail -20
           sudo /tmp/manager.test -test.v -test.run . | grep -E '^(---|    ---|ok|PASS|FAIL)'
 
