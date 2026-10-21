@@ -121,6 +121,55 @@ func TestCommands(t *testing.T) {
 		t.Errorf("repo list -v:\n%s", out)
 	}
 	c.ok("repo", "fetch", "demo")
+	c.fails(1, []string{"usage: tingly-fuse repo add"}, "repo", "add", "shared", upstream, "extra")
+	c.ok("repo", "add", "shared", upstream, "--shared-git")
+	if out := c.ok("repo", "list", "-v"); !strings.Contains(out, "shared") || !strings.Contains(out, "private") {
+		t.Errorf("repo list -v does not tell shared and private git apart:\n%s", out)
+	}
+	c.ok("spawn", "shared", "--id", "s1", "--backend", "copy")
+	c.ok("spawn", "shared", "--id", "s2", "--backend", "copy")
+	c.ok("exec", "s1", "--", "git", "commit", "--quiet", "--allow-empty", "-m", "from-s1")
+	if out := c.ok("exec", "s2", "--", "git", "log", "-1", "--format=%s", "agent/s1"); strings.TrimSpace(out) != "from-s1" {
+		t.Errorf("s2 does not see s1's branch: %q", out)
+	}
+	c.ok("drop", "s1")
+	c.ok("drop", "s2")
+	c.ok("repo", "remove", "shared")
+
+	c.fails(1, []string{"--shared-git"}, "repo", "share", "demo", ".git")
+	c.fails(1, []string{"usage: tingly-fuse repo unshare"}, "repo", "unshare", "demo")
+	if out := c.ok("repo", "share", "demo", "cache", "tmp"); out != "cache\ntmp" {
+		t.Errorf("repo share output: %q", out)
+	}
+	if out := c.ok("repo", "unshare", "demo", "tmp"); out != "cache" {
+		t.Errorf("repo unshare output: %q", out)
+	}
+	c.ok("spawn", "demo", "--id", "c1", "--backend", "copy")
+	c.ok("spawn", "demo", "--id", "c2", "--backend", "copy")
+	c.ok("exec", "c1", "--", "sh", "-c", "echo hi > cache/f")
+	if out := c.ok("exec", "c2", "--", "cat", "cache/f"); strings.TrimSpace(out) != "hi" {
+		t.Errorf("c2 does not see c1's shared cache: %q", out)
+	}
+	c.ok("drop", "c1")
+	c.ok("drop", "c2")
+	c.ok("repo", "unshare", "demo", "cache")
+	if out := c.ok("repo", "share", "demo"); out != "" {
+		t.Errorf("shares left: %q", out)
+	}
+
+	// Shares set at add (repeatable and comma-separated) and per spawn.
+	c.ok("repo", "add", "multi", upstream, "--share", "cache,out", "--share", "logs")
+	if out := c.ok("repo", "share", "multi"); out != "cache\nlogs\nout" {
+		t.Errorf("shares from repo add: %q", out)
+	}
+	c.fails(1, []string{"overlap"}, "spawn", "multi", "--id", "m0", "--backend", "copy", "--share", "cache/x")
+	c.ok("spawn", "multi", "--id", "m1", "--backend", "copy", "--share", "tmp")
+	c.ok("spawn", "multi", "--id", "m2", "--backend", "copy", "--share", "tmp")
+	c.ok("exec", "m1", "--", "sh", "-c", "echo t > tmp/t && echo l > logs/l")
+	if out := c.ok("exec", "m2", "--", "cat", "tmp/t", "logs/l"); strings.TrimSpace(out) != "t\nl" {
+		t.Errorf("m2 sees %q", out)
+	}
+	c.ok("repo", "remove", "multi", "--force")
 
 	if out := c.ok("spawn", "demo", "--id", "a", "--branch", "feature/a", "--backend", "copy"); !strings.HasPrefix(out, "a\n") || !strings.Contains(out, "branch: feature/a") {
 		t.Errorf("spawn output:\n%s", out)

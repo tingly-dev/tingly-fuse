@@ -122,10 +122,11 @@ tingly-fuse spawn tingly-box --base dir-…                # 之后的会话复�
 
 | 命令 | 做什么 |
 |---|---|
-| `repo add <name> <upstream>` | 登记仓库并建共享镜像 |
+| `repo add <name> <upstream> [--shared-git] [--share path]...` | 登记仓库并建共享镜像；`--share` 同时设置共享路径（可重复，也可逗号分隔，与 `repo share` 相同）；`--shared-git` 让所有会话成为同一个共享仓库的 worktree，分支和提交彼此立即可见（[ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)） |
 | `repo list [-v]` | 列出仓库；`-v` 加上会话数和 base 数 |
 | `repo fetch <name>` | 从 upstream 更新镜像 |
 | `repo check <name> [--fix]` | 检查每个 base 是否已固定（不会被 gc 清掉）、对象是否齐全；`--fix` 为旧 base 补上固定 |
+| `repo share <name> [path...]` / `repo unshare <name> <path>...` | 让所有新会话共享指定的目录或文件，例如缓存或 `.env`：宿主上一份，overlay 下 bind mount，copy 和 clone 下用符号链接；不带路径时列出（[ADR 0011](.design/decisions/0011-shared-paths.md)） |
 | `base list <repo>` | 列出 base：所在 commit、创建时间、是否已固定、哪些会话在用 |
 | `base rm <repo> <id>` | 删除没有会话在用的 base（`id` 可以是唯一前缀）；之后 git gc 会回收只有它需要的对象 |
 | `base prune <repo> [--dry-run]` | 删除所有没有会话在用的 base，比如旧的 `--from-dir` 快照 |
@@ -147,8 +148,27 @@ tingly-fuse spawn tingly-box --base dir-…                # 之后的会话复�
 | `--branch <name>` | 要创建的分支（默认 `agent/<id>`） |
 | `--id <id>` | 会话 id（默认随机） |
 | `--backend <name>` | `overlay`、`clone` 或 `copy`（默认值取决于平台） |
+| `--share <path>` | 在仓库的共享路径之外，再和其他带同一路径 spawn 的会话共享这个路径（可重复，也可逗号分隔） |
 
 `spawn` 中途失败会清理掉已创建的一切。
+
+## Go API
+
+命令能做的一切都可以在 Go 里通过模块根目录的包调用；命令本身只用这个包（[ADR 0012](.design/decisions/0012-public-go-api.md)）。
+
+```go
+import tinglyfuse "github.com/tingly-dev/tingly-fuse"
+
+m, _ := tinglyfuse.Open("") // TINGLY_FUSE_HOME，或 ~/.tingly-fuse
+m.AddRepoWith(ctx, "box", "https://github.com/tingly-dev/tingly-box",
+	tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{".cache"}})
+s, _ := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "box", Share: []string{"tmp"}})
+m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
+m.Push(ctx, s.ID, "", os.Stdout, os.Stderr)
+m.Drop(ctx, s.ID)
+```
+
+`tinglyfuse.CheckBackend(ctx, "overlay")` 判断某个后端能否在本机运行。
 
 ## 环境变量
 

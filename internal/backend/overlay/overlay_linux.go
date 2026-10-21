@@ -267,7 +267,11 @@ func startHolder(ws backend.Workspace) (int, error) {
 		return 0, err
 	}
 	defer r.Close()
-	cmd := exec.Command(self, ws.BaseDir, upperDir(ws), workDir(ws), ws.ViewPath)
+	args := []string{ws.BaseDir, upperDir(ws), workDir(ws), ws.ViewPath}
+	for _, sh := range ws.Shares {
+		args = append(args, sh.Path, sh.Source)
+	}
+	cmd := exec.Command(self, args...)
 	cmd.Args[0] = holderArg0
 	cmd.Dir = "/"
 	cmd.ExtraFiles = []*os.File{w} // fd 3
@@ -328,14 +332,15 @@ func stopHolder(ws backend.Workspace) error {
 }
 
 // hold runs in the re-executed holder, already inside its own mount
-// namespace: args are lower, upper, work, view. fd 3 is the status pipe.
+// namespace: args are lower, upper, work, view, then a shared path and its
+// source for each share. fd 3 is the status pipe.
 func hold(args []string) {
 	status := os.NewFile(3, "status")
 	fail := func(format string, a ...any) {
 		fmt.Fprintf(status, format, a...)
 		os.Exit(1)
 	}
-	if len(args) != 4 {
+	if len(args) < 4 || len(args)%2 != 0 {
 		fail("bad arguments %q", args)
 	}
 	lower, upper, work, view := args[0], args[1], args[2], args[3]
@@ -354,6 +359,13 @@ func hold(args []string) {
 	if err := syscall.Mount("overlay", view, "overlay", 0, opts); err != nil {
 		fail("mount overlay at %s: %v", view, err)
 	}
+	// Bind mounts keep shared paths at their place in the view, and unlike
+	// symlinks they cannot be replaced by a rename: that fails with EBUSY.
+	for i := 4; i < len(args); i += 2 {
+		if err := bindShare(view, args[i], args[i+1]); err != nil {
+			fail("share %s: %v", args[i], err)
+		}
+	}
 	_, _, _ = syscall.RawSyscall(syscall.SYS_PRCTL, prCapAmbient, prCapAmbientClearAll, 0)
 
 	sig := make(chan os.Signal, 1)
@@ -363,6 +375,41 @@ func hold(args []string) {
 	status.Close()
 	<-sig
 	os.Exit(0)
+}
+
+// bindShare bind mounts src over rel in view, first creating rel (in the
+// upper layer) as a directory or empty file like src if the base lacks it.
+func bindShare(view, rel, src string) error {
+	sfi, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	dst, err := backend.InView(view, rel)
+	if err != nil {
+		return err
+	}
+	dfi, err := os.Lstat(dst)
+	switch {
+	case os.IsNotExist(err):
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if sfi.IsDir() {
+			err = os.Mkdir(dst, 0o755)
+		} else {
+			err = os.WriteFile(dst, nil, 0o644)
+		}
+		if err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	case dfi.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("it is a symlink in the base")
+	case dfi.IsDir() != sfi.IsDir():
+		return fmt.Errorf("the base and the shared copy disagree on whether it is a directory")
+	}
+	return syscall.Mount(src, dst, "", syscall.MS_BIND|syscall.MS_REC, "")
 }
 
 // chdirExec runs inside the session's namespace: args are view, argv...

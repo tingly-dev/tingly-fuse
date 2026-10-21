@@ -41,7 +41,7 @@ func (Backend) Create(ctx context.Context, ws backend.Workspace) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("clone base: %w", err)
 	}
-	return root, nil
+	return root, backend.LinkShares(root, ws.Shares)
 }
 
 func (Backend) Command(ctx context.Context, ws backend.Workspace, argv []string) (*exec.Cmd, error) {

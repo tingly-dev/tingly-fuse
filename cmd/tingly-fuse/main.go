@@ -1,10 +1,12 @@
 // Command tingly-fuse gives many agents private, copy-on-write views of one
 // git repository.
 //
-//	tingly-fuse repo add <name> <upstream>
+//	tingly-fuse repo add <name> <upstream> [--shared-git] [--share path]...
+//	tingly-fuse repo share <name> [path...]
+//	tingly-fuse repo unshare <name> <path>...
 //	tingly-fuse repo list [-v]
 //	tingly-fuse repo remove <name> [--force]
-//	tingly-fuse spawn <repo> [--from rev | --from-dir dir | --base id] [--id id] [--branch b] [--backend name]
+//	tingly-fuse spawn <repo> [--from rev | --from-dir dir | --base id] [--id id] [--branch b] [--backend name] [--share path]...
 //	tingly-fuse exec <session> -- <cmd> [args...]
 //	tingly-fuse push <session> [--remote origin]
 //	tingly-fuse drop <session>
@@ -23,15 +25,15 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/tingly-dev/tingly-fuse/internal/backend"
-	_ "github.com/tingly-dev/tingly-fuse/internal/backend/clone"
-	_ "github.com/tingly-dev/tingly-fuse/internal/backend/fullcopy"
-	_ "github.com/tingly-dev/tingly-fuse/internal/backend/overlay"
-	"github.com/tingly-dev/tingly-fuse/internal/manager"
+	tinglyfuse "github.com/tingly-dev/tingly-fuse"
 )
 
 const usage = `usage:
-  tingly-fuse repo add <name> <upstream>   register a repository
+  tingly-fuse repo add <name> <upstream>   register a repository (--shared-git: sessions share
+                                           branches, commits and config; --share path: sessions
+                                           share that path, repeatable; see ADR 0010, 0011)
+  tingly-fuse repo share <name> [path...]  share paths across new sessions (no path: list them)
+  tingly-fuse repo unshare <name> <path>... stop sharing paths in new sessions
   tingly-fuse repo list [-v]               list registered repositories (-v: session and base counts)
   tingly-fuse repo fetch <name>            update the repository's mirror from upstream
   tingly-fuse repo check <name> [--fix]    verify every base is pinned and has all its objects
@@ -71,11 +73,10 @@ func run(ctx context.Context, args []string) error {
 		fmt.Fprint(os.Stderr, usage)
 		return flag.ErrHelp
 	}
-	home, err := manager.DefaultHome()
+	m, err := tinglyfuse.Open("")
 	if err != nil {
 		return err
 	}
-	m := manager.New(home)
 
 	cmd, args := args[0], args[1:]
 	switch cmd {
@@ -105,10 +106,20 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 
-func runRepo(ctx context.Context, m *manager.Manager, args []string) error {
+func runRepo(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 	switch {
-	case len(args) == 3 && args[0] == "add":
-		r, err := m.AddRepo(ctx, args[1], args[2])
+	case len(args) >= 3 && args[0] == "add":
+		fs := flag.NewFlagSet("repo add", flag.ContinueOnError)
+		shared := fs.Bool("shared-git", false, "make every session a worktree of one shared repository: branches, commits and config are visible to all sessions")
+		var shares listFlag
+		fs.Var(&shares, "share", "path every session shares (repeatable, or comma-separated)")
+		if err := fs.Parse(args[3:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> [--shared-git] [--share path]...")
+		}
+		r, err := m.AddRepoWith(ctx, args[1], args[2], tinglyfuse.AddOptions{SharedGit: *shared, SharedPaths: shares})
 		if err != nil {
 			return err
 		}
@@ -133,6 +144,28 @@ func runRepo(ctx context.Context, m *manager.Manager, args []string) error {
 			return fmt.Errorf("usage: tingly-fuse repo check <name> [--fix]")
 		}
 		return runRepoCheck(ctx, m, args[1], *fix)
+	case len(args) >= 2 && (args[0] == "share" || args[0] == "unshare"):
+		remove := args[0] == "unshare"
+		if remove && len(args) == 2 {
+			return fmt.Errorf("usage: tingly-fuse repo unshare <name> <path>...")
+		}
+		var paths []string
+		if len(args) > 2 || remove {
+			r, err := m.SetShares(args[1], args[2:], remove)
+			if err != nil {
+				return err
+			}
+			paths = r.SharedPaths
+		} else {
+			var err error
+			if paths, err = m.Shares(args[1]); err != nil {
+				return err
+			}
+		}
+		for _, p := range paths {
+			fmt.Println(p)
+		}
+		return nil
 	case len(args) >= 2 && args[0] == "remove":
 		fs := flag.NewFlagSet("repo remove", flag.ContinueOnError)
 		force := fs.Bool("force", false, "drop the repository's sessions first (unpushed work is lost)")
@@ -144,11 +177,11 @@ func runRepo(ctx context.Context, m *manager.Manager, args []string) error {
 		}
 		return m.RemoveRepo(ctx, args[1], *force)
 	default:
-		return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> | repo list [-v] | repo fetch <name> | repo check <name> [--fix] | repo remove <name> [--force]")
+		return fmt.Errorf("usage: tingly-fuse repo add <name> <upstream> [--shared-git] [--share path]... | repo share <name> [path...] | repo unshare <name> <path>... | repo list [-v] | repo fetch <name> | repo check <name> [--fix] | repo remove <name> [--force]")
 	}
 }
 
-func runRepoList(m *manager.Manager, verbose bool) error {
+func runRepoList(m *tinglyfuse.Manager, verbose bool) error {
 	repos, err := m.Repos()
 	if err != nil {
 		return err
@@ -169,18 +202,22 @@ func runRepoList(m *manager.Manager, verbose bool) error {
 	for _, s := range sessions {
 		perRepo[s.Repo]++
 	}
-	fmt.Fprintln(w, "NAME\tSESSIONS\tBASES\tUPSTREAM")
+	fmt.Fprintln(w, "NAME\tSESSIONS\tBASES\tGIT\tUPSTREAM")
 	for _, r := range repos {
 		bases, err := r.Bases()
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", r.Name, perRepo[r.Name], len(bases), r.Upstream)
+		git := "private"
+		if r.SharedGit {
+			git = "shared"
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\n", r.Name, perRepo[r.Name], len(bases), git, r.Upstream)
 	}
 	return w.Flush()
 }
 
-func runBase(ctx context.Context, m *manager.Manager, args []string) error {
+func runBase(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 	const usage = "usage: tingly-fuse base list <repo> | base rm <repo> <id> | base prune <repo> [--dry-run]"
 	switch {
 	case len(args) == 2 && args[0] == "list":
@@ -219,7 +256,7 @@ func runBase(ctx context.Context, m *manager.Manager, args []string) error {
 	}
 }
 
-func runRepoCheck(ctx context.Context, m *manager.Manager, name string, fix bool) error {
+func runRepoCheck(ctx context.Context, m *tinglyfuse.Manager, name string, fix bool) error {
 	bases, err := m.CheckRepo(ctx, name, fix)
 	if err != nil {
 		return err
@@ -250,16 +287,17 @@ func runRepoCheck(ctx context.Context, m *manager.Manager, name string, fix bool
 	return nil
 }
 
-func runSpawn(ctx context.Context, m *manager.Manager, args []string) error {
+func runSpawn(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 	fs := flag.NewFlagSet("spawn", flag.ContinueOnError)
-	var opts manager.SpawnOptions
+	var opts tinglyfuse.SpawnOptions
 	fs.StringVar(&opts.From, "from", "", "revision to start from (default: upstream HEAD)")
 	fs.StringVar(&opts.FromDir, "from-dir", "", "snapshot this prepared checkout (dependencies installed, built) as the base")
 	fs.StringVar(&opts.Base, "base", "", "reuse an existing base by id (see repo list -v), e.g. one made by --from-dir")
 	fs.BoolVar(&opts.NoFetch, "no-fetch", false, "resolve --from against the local mirror without fetching first")
 	fs.StringVar(&opts.ID, "id", "", "session id (default: random)")
 	fs.StringVar(&opts.Branch, "branch", "", "branch to create (default: agent/<id>)")
-	fs.StringVar(&opts.Backend, "backend", "", fmt.Sprintf("view backend %v (default %q)", backend.Names(), backend.Default))
+	fs.StringVar(&opts.Backend, "backend", "", fmt.Sprintf("view backend %v (default %q)", tinglyfuse.Backends(), tinglyfuse.DefaultBackend()))
+	fs.Var((*listFlag)(&opts.Share), "share", "also share this path with other sessions sharing it (repeatable, or comma-separated)")
 	if len(args) == 0 {
 		return fmt.Errorf("usage: tingly-fuse spawn <repo> [flags]")
 	}
@@ -279,14 +317,14 @@ func runSpawn(ctx context.Context, m *manager.Manager, args []string) error {
 	return nil
 }
 
-func runExec(ctx context.Context, m *manager.Manager, args []string) error {
+func runExec(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 	if len(args) < 3 || args[1] != "--" {
 		return fmt.Errorf("usage: tingly-fuse exec <session> -- <cmd> [args...]")
 	}
 	return m.Exec(ctx, args[0], args[2:], os.Stdin, os.Stdout, os.Stderr)
 }
 
-func runPush(ctx context.Context, m *manager.Manager, args []string) error {
+func runPush(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 	fs := flag.NewFlagSet("push", flag.ContinueOnError)
 	remote := fs.String("remote", "origin", "remote to push to")
 	if len(args) == 0 {
@@ -298,7 +336,7 @@ func runPush(ctx context.Context, m *manager.Manager, args []string) error {
 	return m.Push(ctx, args[0], *remote, os.Stdout, os.Stderr)
 }
 
-func runList(m *manager.Manager) error {
+func runList(m *tinglyfuse.Manager) error {
 	sessions, err := m.Sessions()
 	if err != nil {
 		return err
@@ -317,4 +355,19 @@ func shortBase(b string) string {
 		return b[:12]
 	}
 	return b
+}
+
+// listFlag collects a repeatable flag; each value may also be a
+// comma-separated list.
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, ",") }
+
+func (l *listFlag) Set(v string) error {
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			*l = append(*l, p)
+		}
+	}
+	return nil
 }

@@ -122,10 +122,11 @@ tingly-fuse spawn tingly-box --base dir-…                # more sessions reuse
 
 | Command | What it does |
 |---|---|
-| `repo add <name> <upstream>` | Register a repository and create its shared mirror |
+| `repo add <name> <upstream> [--shared-git] [--share path]...` | Register a repository and create its shared mirror; `--share` sets shared paths right away (repeatable or comma-separated, same as `repo share`); `--shared-git` makes every session a worktree of one shared repository, so branches and commits are visible to all sessions ([ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)) |
 | `repo list [-v]` | List repositories; `-v` adds session and base counts |
 | `repo fetch <name>` | Update the mirror from upstream |
 | `repo check <name> [--fix]` | Check that every base is pinned against gc and still has all its objects; `--fix` pins old bases |
+| `repo share <name> [path...]` / `repo unshare <name> <path>...` | Share directories or files across all new sessions, such as caches or `.env`: one copy on the host, bind mounted under overlay and symlinked under copy and clone; no path lists them ([ADR 0011](.design/decisions/0011-shared-paths.md)) |
 | `base list <repo>` | List bases with their head commit, creation time, pin state and the sessions using them |
 | `base rm <repo> <id>` | Delete a base no session uses (`id` may be a unique prefix); git gc then reclaims objects only it needed |
 | `base prune <repo> [--dry-run]` | Delete every base no session uses, such as old `--from-dir` snapshots |
@@ -147,8 +148,27 @@ tingly-fuse spawn tingly-box --base dir-…                # more sessions reuse
 | `--branch <name>` | Branch to create (default `agent/<id>`) |
 | `--id <id>` | Session id (default: random) |
 | `--backend <name>` | `overlay`, `clone` or `copy` (default depends on the platform) |
+| `--share <path>` | Also share this path, on top of the repository's shared paths, with every other session spawned with it (repeatable or comma-separated) |
 
 If `spawn` fails partway, it cleans up everything it created.
+
+## Go API
+
+Everything the command does is callable from Go through the package at the module root; the command itself uses nothing else ([ADR 0012](.design/decisions/0012-public-go-api.md)).
+
+```go
+import tinglyfuse "github.com/tingly-dev/tingly-fuse"
+
+m, _ := tinglyfuse.Open("") // TINGLY_FUSE_HOME, or ~/.tingly-fuse
+m.AddRepoWith(ctx, "box", "https://github.com/tingly-dev/tingly-box",
+	tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{".cache"}})
+s, _ := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "box", Share: []string{"tmp"}})
+m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
+m.Push(ctx, s.ID, "", os.Stdout, os.Stderr)
+m.Drop(ctx, s.ID)
+```
+
+`tinglyfuse.CheckBackend(ctx, "overlay")` tells whether a backend can run on this host.
 
 ## Environment variables
 

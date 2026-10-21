@@ -48,7 +48,12 @@ func New(home string) *Manager {
 
 // AddRepo registers a repository.
 func (m *Manager) AddRepo(ctx context.Context, name, upstream string) (*repo.Repo, error) {
-	return repo.Add(ctx, m.Home, name, upstream)
+	return m.AddRepoWith(ctx, name, upstream, repo.AddOptions{})
+}
+
+// AddRepoWith is AddRepo with registration options, such as shared git.
+func (m *Manager) AddRepoWith(ctx context.Context, name, upstream string, opts repo.AddOptions) (*repo.Repo, error) {
+	return repo.Add(ctx, m.Home, name, upstream, opts)
 }
 
 // RemoveRepo unregisters a repository and deletes its mirror and bases.
@@ -91,6 +96,10 @@ type SpawnOptions struct {
 	ID      string // optional; random when empty
 	Branch  string // optional; agent/<id> when empty
 	Backend string // optional; backend.Default when empty
+	// Share adds shared paths for this session on top of the repository's
+	// (see SetShares). It shares them with every other session that shares
+	// the same path, through the repository's one copy of it.
+	Share []string
 }
 
 // Spawn creates a session: a private view of the base commit with a new
@@ -154,6 +163,10 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		return nil, err
 	}
 
+	shared, err := repo.MergeSharePaths(r.SharedPaths, opts.Share)
+	if err != nil {
+		return nil, err
+	}
 	id := opts.ID
 	if id == "" {
 		id = session.NewID()
@@ -162,15 +175,39 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		return nil, err
 	}
 	ws := backend.Workspace{ID: id, Repo: r.Name, BaseDir: baseDir, StateDir: m.sessions.Dir(id)}
+	sharedGitDir := ""
 	defer func() {
 		if err != nil {
 			_ = b.Remove(context.WithoutCancel(ctx), ws)
+			if sharedGitDir != "" {
+				_ = r.RemoveSessionGitDir(id)
+			}
 			_ = m.sessions.Delete(id)
 		}
 	}()
 
+	// Seeding a share is permanent, so it waits until the id is ours.
+	var shares []repo.Share
+	if shares, err = r.EnsureShares(ctx, baseDir, shared); err != nil {
+		return nil, err
+	}
+	ws.Shares = toBackendShares(shares)
 	if ws.ViewPath, err = b.Create(ctx, ws); err != nil {
 		return nil, fmt.Errorf("create view: %w", err)
+	}
+	if r.SharedGit {
+		if sharedGitDir, err = r.AddSessionGitDir(ctx, id, baseDir, ws.ViewPath); err != nil {
+			return nil, fmt.Errorf("shared git: %w", err)
+		}
+		// Only a process inside the view can change it (overlay), so the
+		// switch from the base's .git to the shared one runs there.
+		link := []string{"sh", "-c", `rm -rf .git && ln -s "$1" .git`, "sh", sharedGitDir}
+		if err = m.run(ctx, b, ws, &session.Session{ID: id, Repo: r.Name}, link, nil, io.Discard, nil); err != nil {
+			return nil, fmt.Errorf("shared git: link .git: %w", err)
+		}
+	}
+	if err = m.excludeShares(ctx, b, ws, id, r.Name, shares); err != nil {
+		return nil, fmt.Errorf("exclude shared paths: %w", err)
 	}
 	sess = &session.Session{
 		ID:        id,
@@ -181,6 +218,7 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		Branch:    orDefault(opts.Branch, "agent/"+id),
 		Backend:   b.Name(),
 		ViewPath:  ws.ViewPath,
+		Shared:    shared,
 		CreatedAt: time.Now().UTC(),
 	}
 	if err = m.run(ctx, b, ws, sess, []string{"git", "switch", "--quiet", "--create", sess.Branch}, nil, io.Discard, nil); err != nil {
@@ -396,13 +434,21 @@ func (m *Manager) Push(ctx context.Context, id, remote string, stdout, stderr io
 	return m.run(ctx, b, ws, sess, argv, nil, stdout, stderr)
 }
 
-// Drop removes the session's view and metadata. Unpushed work is lost.
+// Drop removes the session's view and metadata. Unpushed work is lost,
+// except with shared git, where the session's branch and commits stay in
+// the shared repository.
 func (m *Manager) Drop(ctx context.Context, id string) error {
-	_, b, ws, err := m.load(id)
+	sess, b, ws, err := m.load(id)
 	if err != nil {
 		return err
 	}
-	return errors.Join(b.Remove(ctx, ws), m.sessions.Delete(id))
+	errs := []error{b.Remove(ctx, ws)}
+	if r, rerr := repo.Open(m.Home, sess.Repo); rerr != nil {
+		errs = append(errs, rerr)
+	} else if r.SharedGit {
+		errs = append(errs, r.RemoveSessionGitDir(id))
+	}
+	return errors.Join(append(errs, m.sessions.Delete(id))...)
 }
 
 func (m *Manager) load(id string) (*session.Session, backend.Backend, backend.Workspace, error) {
@@ -425,7 +471,54 @@ func (m *Manager) load(id string) (*session.Session, backend.Backend, backend.Wo
 		StateDir: m.sessions.Dir(sess.ID),
 		ViewPath: sess.ViewPath,
 	}
+	for _, p := range sess.Shared {
+		ws.Shares = append(ws.Shares, backend.Share{Path: p, Source: r.ShareSource(p)})
+	}
 	return sess, b, ws, nil
+}
+
+// excludeShares adds each untracked shared path to the view's
+// info/exclude, so a session never commits shared content. A symlinked
+// share (copy, clone) is a file to git, which a directory-only rule such
+// as "node_modules/" in .gitignore would not match.
+func (m *Manager) excludeShares(ctx context.Context, b backend.Backend, ws backend.Workspace, id, repoName string, shares []repo.Share) error {
+	var patterns []string
+	for _, s := range shares {
+		if !s.Tracked {
+			patterns = append(patterns, "/"+globEscaper.Replace(s.Path))
+		}
+	}
+	if len(patterns) == 0 {
+		return nil
+	}
+	script := `f=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$f")" && for p; do grep -qxF -- "$p" "$f" 2>/dev/null || printf '%s\n' "$p" >> "$f"; done`
+	argv := append([]string{"sh", "-c", script, "sh"}, patterns...)
+	return m.run(ctx, b, ws, &session.Session{ID: id, Repo: repoName}, argv, nil, io.Discard, nil)
+}
+
+var globEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`)
+
+func toBackendShares(shares []repo.Share) []backend.Share {
+	var out []backend.Share
+	for _, s := range shares {
+		out = append(out, backend.Share{Path: s.Path, Source: s.Source, Tracked: s.Tracked})
+	}
+	return out
+}
+
+// Shares returns the paths a repository's new sessions share.
+func (m *Manager) Shares(name string) ([]string, error) {
+	r, err := repo.Open(m.Home, name)
+	if err != nil {
+		return nil, err
+	}
+	return r.SharedPaths, nil
+}
+
+// SetShares adds or removes shared paths of a repository; see
+// repo.SetShares.
+func (m *Manager) SetShares(name string, paths []string, remove bool) (*repo.Repo, error) {
+	return repo.SetShares(m.Home, name, paths, remove)
 }
 
 func (m *Manager) run(ctx context.Context, b backend.Backend, ws backend.Workspace, sess *session.Session, argv []string, stdin io.Reader, stdout, stderr io.Writer) error {
