@@ -2,12 +2,24 @@
 // tingly-fuse command does, callable from a program. The command itself
 // is built on this package only.
 //
+// It has two layers, like the command (ADR 0013). The generic layer works
+// on any directory: snapshot it, spawn private views of the snapshot, share
+// paths between them, run commands in them.
+//
 //	m, _ := tinglyfuse.Open("")  // TINGLY_FUSE_HOME, or ~/.tingly-fuse
-//	m.AddRepoWith(ctx, "box", "https://github.com/tingly-dev/tingly-box",
-//		tinglyfuse.AddOptions{SharedPaths: []string{"node_modules/.cache"}})
-//	s, _ := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "box", Share: []string{".env"}})
+//	m.AddDir(ctx, "data", "/srv/data", tinglyfuse.DirOptions{SharedPaths: []string{"cache"}})
+//	s, _ := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "data"})
+//	m.Exec(ctx, s.ID, []string{"make"}, nil, os.Stdout, os.Stderr)
+//	m.Drop(ctx, s.ID)
+//
+// The git layer, m.Git(), adds an upstream mirror, bases at commits,
+// a branch per session to push, and shared .git:
+//
+//	m.Git().Add(ctx, "box", "https://github.com/tingly-dev/tingly-box",
+//		tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{"node_modules/.cache"}})
+//	s, _ := m.Git().Spawn(ctx, tinglyfuse.GitSpawnOptions{Repo: "box", Share: []string{".env"}})
 //	m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
-//	m.Push(ctx, s.ID, "", os.Stdout, os.Stderr)
+//	m.Git().Push(ctx, s.ID, "", os.Stdout, os.Stderr)
 //	m.Drop(ctx, s.ID)
 //
 // Importing it registers every backend this platform supports.
@@ -33,11 +45,20 @@ import (
 type (
 	// Manager owns the repositories and sessions under one home directory.
 	Manager = manager.Manager
-	// SpawnOptions say where a session starts and what it shares.
+	// Git is a Manager's git layer.
+	Git = manager.Git
+	// SpawnOptions say which snapshot a session of a dir repository starts
+	// from and what it shares.
 	SpawnOptions = manager.SpawnOptions
-	// AddOptions are the settings a repository is registered with.
+	// GitSpawnOptions say where a session of a git repository starts, its
+	// branch and what it shares.
+	GitSpawnOptions = manager.GitSpawnOptions
+	// DirOptions are the settings a dir repository is registered with.
+	DirOptions = repo.DirOptions
+	// AddOptions are the settings a git repository is registered with.
 	AddOptions = repo.AddOptions
-	// Repo is a registered repository.
+	// Repo is a registered repository: a plain directory or a git
+	// repository.
 	Repo = repo.Repo
 	// Session is one agent's view of a repository.
 	Session = session.Session
@@ -45,6 +66,12 @@ type (
 	BaseInfo = manager.BaseInfo
 	// BaseHealth is the result of checking one base.
 	BaseHealth = manager.BaseHealth
+)
+
+// Repository kinds, as in Repo.Kind.
+const (
+	KindDir = repo.KindDir
+	KindGit = repo.KindGit
 )
 
 // Environment variables set for every process run inside a view.
@@ -110,6 +137,5 @@ func CheckBackend(ctx context.Context, name string) error {
 	return nil
 }
 
-// DefaultBackend is the backend sessions use when SpawnOptions.Backend is
-// empty.
+// DefaultBackend is the backend sessions use when no backend is given.
 func DefaultBackend() string { return backend.Default }

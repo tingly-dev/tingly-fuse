@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -104,79 +105,85 @@ func TestCommands(t *testing.T) {
 	// Usage errors: every command says how to call it.
 	c.fails(2, []string{"usage:"})
 	c.fails(1, []string{"usage:"}, "nope")
-	c.fails(1, []string{"usage: tingly-fuse repo"}, "repo")
+	c.fails(1, []string{"git add", "base list"}, "repo")
+	c.fails(1, []string{"git push"}, "push", "x")
+	c.fails(1, []string{"usage: tingly-fuse git"}, "git")
+	c.fails(1, []string{"usage: tingly-fuse git spawn"}, "git", "spawn")
+	c.fails(1, []string{"usage: tingly-fuse share"}, "share")
+	c.fails(1, []string{"usage: tingly-fuse remove"}, "remove")
 	c.fails(1, []string{"usage: tingly-fuse base"}, "base")
 	c.fails(1, []string{"usage: tingly-fuse base"}, "base", "rm", "demo")
 	c.fails(1, []string{"usage: tingly-fuse spawn"}, "spawn")
 	c.fails(1, []string{"usage: tingly-fuse exec"}, "exec", "x")
 	c.fails(1, []string{"usage: tingly-fuse drop"}, "drop")
 	c.fails(1, []string{"not registered"}, "spawn", "demo")
-	if out := c.ok("help"); !strings.Contains(out, "base prune") || !strings.Contains(out, "repo check") {
+	c.fails(1, []string{"not registered"}, "git", "spawn", "demo")
+	if out := c.ok("help"); !strings.Contains(out, "base prune") || !strings.Contains(out, "git check") {
 		t.Errorf("help lacks the base and check commands:\n%s", out)
 	}
 
-	c.ok("repo", "add", "demo", upstream)
-	c.fails(1, []string{"already registered"}, "repo", "add", "demo", upstream)
-	if out := c.ok("repo", "list", "-v"); !strings.Contains(out, "demo") || !strings.Contains(out, "SESSIONS") {
-		t.Errorf("repo list -v:\n%s", out)
+	c.ok("git", "add", "demo", upstream)
+	c.fails(1, []string{"already registered"}, "git", "add", "demo", upstream)
+	if out := c.ok("base", "list"); !strings.Contains(out, "demo") || !strings.Contains(out, "SESSIONS") {
+		t.Errorf("base list:\n%s", out)
 	}
-	c.ok("repo", "fetch", "demo")
-	c.fails(1, []string{"usage: tingly-fuse repo add"}, "repo", "add", "shared", upstream, "extra")
-	c.ok("repo", "add", "shared", upstream, "--shared-git")
-	if out := c.ok("repo", "list", "-v"); !strings.Contains(out, "shared") || !strings.Contains(out, "private") {
-		t.Errorf("repo list -v does not tell shared and private git apart:\n%s", out)
+	c.ok("git", "fetch", "demo")
+	c.fails(1, []string{"usage: tingly-fuse git add"}, "git", "add", "shared", upstream, "extra")
+	c.ok("git", "add", "shared", upstream, "--shared-git")
+	if out := c.ok("base", "list"); !strings.Contains(out, "git (shared)") || !regexp.MustCompile(`demo +git +`).MatchString(out) {
+		t.Errorf("base list does not tell shared and private git apart:\n%s", out)
 	}
-	c.ok("spawn", "shared", "--id", "s1", "--backend", "copy")
-	c.ok("spawn", "shared", "--id", "s2", "--backend", "copy")
+	c.ok("git", "spawn", "shared", "--id", "s1", "--backend", "copy")
+	c.ok("git", "spawn", "shared", "--id", "s2", "--backend", "copy")
 	c.ok("exec", "s1", "--", "git", "commit", "--quiet", "--allow-empty", "-m", "from-s1")
 	if out := c.ok("exec", "s2", "--", "git", "log", "-1", "--format=%s", "agent/s1"); strings.TrimSpace(out) != "from-s1" {
 		t.Errorf("s2 does not see s1's branch: %q", out)
 	}
 	c.ok("drop", "s1")
 	c.ok("drop", "s2")
-	c.ok("repo", "remove", "shared")
+	c.ok("remove", "shared")
 
-	c.fails(1, []string{"--shared-git"}, "repo", "share", "demo", ".git")
-	c.fails(1, []string{"usage: tingly-fuse repo unshare"}, "repo", "unshare", "demo")
-	if out := c.ok("repo", "share", "demo", "cache", "tmp"); out != "cache\ntmp" {
-		t.Errorf("repo share output: %q", out)
+	c.fails(1, []string{"--shared-git"}, "share", "demo", ".git")
+	c.fails(1, []string{"usage: tingly-fuse unshare"}, "unshare", "demo")
+	if out := c.ok("share", "demo", "cache", "tmp"); out != "cache\ntmp" {
+		t.Errorf("share output: %q", out)
 	}
-	if out := c.ok("repo", "unshare", "demo", "tmp"); out != "cache" {
-		t.Errorf("repo unshare output: %q", out)
+	if out := c.ok("unshare", "demo", "tmp"); out != "cache" {
+		t.Errorf("unshare output: %q", out)
 	}
-	c.ok("spawn", "demo", "--id", "c1", "--backend", "copy")
-	c.ok("spawn", "demo", "--id", "c2", "--backend", "copy")
+	c.ok("git", "spawn", "demo", "--id", "c1", "--backend", "copy")
+	c.ok("git", "spawn", "demo", "--id", "c2", "--backend", "copy")
 	c.ok("exec", "c1", "--", "sh", "-c", "echo hi > cache/f")
 	if out := c.ok("exec", "c2", "--", "cat", "cache/f"); strings.TrimSpace(out) != "hi" {
 		t.Errorf("c2 does not see c1's shared cache: %q", out)
 	}
 	c.ok("drop", "c1")
 	c.ok("drop", "c2")
-	c.ok("repo", "unshare", "demo", "cache")
-	if out := c.ok("repo", "share", "demo"); out != "" {
+	c.ok("unshare", "demo", "cache")
+	if out := c.ok("share", "demo"); out != "" {
 		t.Errorf("shares left: %q", out)
 	}
 
 	// Shares set at add (repeatable and comma-separated) and per spawn.
-	c.ok("repo", "add", "multi", upstream, "--share", "cache,out", "--share", "logs")
-	if out := c.ok("repo", "share", "multi"); out != "cache\nlogs\nout" {
-		t.Errorf("shares from repo add: %q", out)
+	c.ok("git", "add", "multi", upstream, "--share", "cache,out", "--share", "logs")
+	if out := c.ok("share", "multi"); out != "cache\nlogs\nout" {
+		t.Errorf("shares from git add: %q", out)
 	}
-	c.fails(1, []string{"overlap"}, "spawn", "multi", "--id", "m0", "--backend", "copy", "--share", "cache/x")
-	c.ok("spawn", "multi", "--id", "m1", "--backend", "copy", "--share", "tmp")
-	c.ok("spawn", "multi", "--id", "m2", "--backend", "copy", "--share", "tmp")
+	c.fails(1, []string{"overlap"}, "git", "spawn", "multi", "--id", "m0", "--backend", "copy", "--share", "cache/x")
+	c.ok("git", "spawn", "multi", "--id", "m1", "--backend", "copy", "--share", "tmp")
+	c.ok("git", "spawn", "multi", "--id", "m2", "--backend", "copy", "--share", "tmp")
 	c.ok("exec", "m1", "--", "sh", "-c", "echo t > tmp/t && echo l > logs/l")
 	if out := c.ok("exec", "m2", "--", "cat", "tmp/t", "logs/l"); strings.TrimSpace(out) != "t\nl" {
 		t.Errorf("m2 sees %q", out)
 	}
-	c.ok("repo", "remove", "multi", "--force")
+	c.ok("remove", "multi", "--force")
 
-	if out := c.ok("spawn", "demo", "--id", "a", "--branch", "feature/a", "--backend", "copy"); !strings.HasPrefix(out, "a\n") || !strings.Contains(out, "branch: feature/a") {
+	if out := c.ok("git", "spawn", "demo", "--id", "a", "--branch", "feature/a", "--backend", "copy"); !strings.HasPrefix(out, "a\n") || !strings.Contains(out, "branch: feature/a") {
 		t.Errorf("spawn output:\n%s", out)
 	}
-	c.ok("spawn", "demo", "--id", "b", "--from", "main", "--no-fetch", "--backend", "copy")
-	c.fails(1, []string{"mutually exclusive"}, "spawn", "demo", "--from", "main", "--base", "x")
-	c.fails(1, []string{"no base"}, "spawn", "demo", "--base", "nope")
+	c.ok("git", "spawn", "demo", "--id", "b", "--from", "main", "--no-fetch", "--backend", "copy")
+	c.fails(1, []string{"mutually exclusive"}, "git", "spawn", "demo", "--from", "main", "--base", "x")
+	c.fails(1, []string{"no base"}, "git", "spawn", "demo", "--base", "nope")
 
 	// exec passes stdout through and propagates the exit code.
 	if out := c.ok("exec", "a", "--", "sh", "-c", `echo "$TINGLY_SESSION"; cat README.md`); out != "a\nhello" {
@@ -184,7 +191,7 @@ func TestCommands(t *testing.T) {
 	}
 	c.fails(7, nil, "exec", "a", "--", "sh", "-c", "exit 7")
 	c.ok("exec", "a", "--", "sh", "-c", "echo a > a.txt && git add a.txt && git commit -qm a")
-	c.ok("push", "a")
+	c.ok("git", "push", "a")
 	if got := git(t, upstream, "branch", "--list", "feature/a", "--format=%(refname:short)"); got != "feature/a" {
 		t.Errorf("pushed branches = %q", got)
 	}
@@ -193,7 +200,7 @@ func TestCommands(t *testing.T) {
 	prep := filepath.Join(tmp, "prep")
 	git(t, tmp, "clone", "--quiet", upstream, prep)
 	os.WriteFile(filepath.Join(prep, "prepared.txt"), []byte("prepared\n"), 0o644)
-	out := c.ok("spawn", "demo", "--id", "d", "--from-dir", prep, "--backend", "copy")
+	out := c.ok("git", "spawn", "demo", "--id", "d", "--from-dir", prep, "--backend", "copy")
 	var dirBase string
 	for _, line := range strings.Split(out, "\n") {
 		if b, ok := strings.CutPrefix(line, "base: "); ok {
@@ -203,15 +210,15 @@ func TestCommands(t *testing.T) {
 	if !strings.HasPrefix(dirBase, "dir-") {
 		t.Fatalf("spawn --from-dir output:\n%s", out)
 	}
-	c.ok("spawn", "demo", "--id", "e", "--base", dirBase, "--backend", "copy")
+	c.ok("git", "spawn", "demo", "--id", "e", "--base", dirBase, "--backend", "copy")
 	if out := c.ok("list"); strings.Count(out, "\n") != 4 {
 		t.Errorf("list:\n%s", out)
 	}
 	if out := c.ok("base", "list", "demo"); !strings.Contains(out, dirBase) || !strings.Contains(out, "d,e") {
 		t.Errorf("base list:\n%s", out)
 	}
-	if out := c.ok("repo", "check", "demo"); strings.Count(out, "ok") != 2 {
-		t.Errorf("repo check:\n%s", out)
+	if out := c.ok("git", "check", "demo"); strings.Count(out, "ok") != 2 {
+		t.Errorf("git check:\n%s", out)
 	}
 
 	// Bases in use are kept; unused ones go.
@@ -233,13 +240,60 @@ func TestCommands(t *testing.T) {
 	for _, ref := range strings.Fields(git(t, mirror, "for-each-ref", "--format=%(refname)", "refs/tingly/")) {
 		git(t, mirror, "update-ref", "-d", ref)
 	}
-	c.fails(1, []string{"false", "problem(s) found"}, "repo", "check", "demo")
-	c.ok("repo", "check", "demo", "--fix")
-	c.ok("repo", "check", "demo")
+	c.fails(1, []string{"false", "problem(s) found"}, "git", "check", "demo")
+	c.ok("git", "check", "demo", "--fix")
+	c.ok("git", "check", "demo")
 
-	c.fails(1, []string{"still has sessions"}, "repo", "remove", "demo")
-	c.ok("repo", "remove", "demo", "--force")
+	// Any directory: snapshot, spawn, share; git commands refuse it.
+	data := filepath.Join(tmp, "data")
+	os.MkdirAll(filepath.Join(data, "cache"), 0o755)
+	os.WriteFile(filepath.Join(data, "f"), []byte("v1\n"), 0o644)
+	c.fails(1, []string{"usage: tingly-fuse base add"}, "base", "add", "data", data, "extra")
+	first := c.ok("base", "add", "data", data, "--share", "cache")
+	if !strings.HasPrefix(first, "snap-") {
+		t.Fatalf("base add printed %q", first)
+	}
+	c.fails(1, []string{"git spawn"}, "spawn", "demo")
+	c.fails(1, []string{"--from-dir"}, "base", "add", "demo", data)
+	c.fails(1, []string{"not a git repository"}, "git", "spawn", "data")
+	c.fails(1, []string{"not a git repository"}, "git", "check", "data")
+	if out := c.ok("spawn", "data", "--id", "p1", "--backend", "copy"); !strings.HasPrefix(out, "p1\n") || strings.Contains(out, "branch:") || !strings.Contains(out, "base: "+first) {
+		t.Errorf("spawn output:\n%s", out)
+	}
+	c.fails(1, []string{"not a git repository"}, "git", "push", "p1")
+	c.fails(1, []string{"usage: tingly-fuse spawn"}, "spawn", "data", "extra")
+	os.WriteFile(filepath.Join(data, "f"), []byte("v2\n"), 0o644)
+	second := c.ok("base", "add", "data", data)
+	c.ok("spawn", "data", "--id", "p2", "--backend", "copy")
+	c.ok("spawn", "data", "--id", "p3", "--backend", "copy", "--base", first)
+	c.ok("exec", "p1", "--", "sh", "-c", "echo c > cache/c")
+	if out := c.ok("exec", "p2", "--", "cat", "f", "cache/c"); out != "v2\nc" {
+		t.Errorf("p2 sees %q", out)
+	}
+	if out := c.ok("exec", "p3", "--", "cat", "f"); out != "v1" {
+		t.Errorf("p3 sees %q", out)
+	}
+	if out := c.ok("base", "list"); !regexp.MustCompile(`data +dir +3 +2 +` + regexp.QuoteMeta(data)).MatchString(out) {
+		t.Errorf("base list:\n%s", out)
+	}
+	if out := c.ok("base", "list", "data"); !regexp.MustCompile(second+` +\S+ +true +p2`).MatchString(out) || !regexp.MustCompile(first+` +\S+ +false +p1,p3`).MatchString(out) {
+		t.Errorf("base list data:\n%s", out)
+	}
+	if out := c.ok("list"); !regexp.MustCompile(`p1 +data +- +`).MatchString(out) {
+		t.Errorf("list:\n%s", out)
+	}
+	for _, id := range []string{"p1", "p2", "p3"} {
+		c.ok("drop", id)
+	}
+	if out := c.ok("base", "prune", "data"); out != first {
+		t.Errorf("prune data = %q, want only %s", out, first)
+	}
+	c.fails(1, []string{"base add first"}, "base", "rm", "data", second)
+	c.ok("remove", "data")
+
+	c.fails(1, []string{"still has sessions"}, "remove", "demo")
+	c.ok("remove", "demo", "--force")
 	if out := c.ok("list"); strings.Contains(out, "\n") {
-		t.Errorf("sessions survived repo remove --force:\n%s", out)
+		t.Errorf("sessions survived remove --force:\n%s", out)
 	}
 }

@@ -24,10 +24,10 @@ var validID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 type Session struct {
 	ID        string    `json:"id"`
 	Repo      string    `json:"repo"`
-	Base      string    `json:"base"`             // base id: a commit sha, or dir-<sha12>-<time> for a prepared directory
+	Base      string    `json:"base"`             // base id: snap-… for a dir repository; for git, a commit sha, or dir-<sha12>-<time> for a prepared directory
 	Head      string    `json:"head,omitempty"`   // commit the base is at, when Base is not itself a sha
 	Source    string    `json:"source,omitempty"` // directory the base was snapshotted from
-	Branch    string    `json:"branch"`           // branch created inside the view
+	Branch    string    `json:"branch"`           // git: branch created inside the view; empty for a dir repository
 	Backend   string    `json:"backend"`          // backend name
 	ViewPath  string    `json:"view_path"`
 	Shared    []string  `json:"shared,omitempty"` // shared paths, fixed at spawn

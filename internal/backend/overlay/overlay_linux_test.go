@@ -17,6 +17,7 @@ import (
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
 	"github.com/tingly-dev/tingly-fuse/internal/backend/overlay"
 	"github.com/tingly-dev/tingly-fuse/internal/manager"
+	"github.com/tingly-dev/tingly-fuse/internal/repo"
 )
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -52,7 +53,7 @@ func setup(t *testing.T) (*manager.Manager, string) {
 	git(t, tmp, "clone", "--quiet", "--bare", src, upstream)
 
 	m := manager.New(filepath.Join(tmp, "home"))
-	if _, err := m.AddRepo(context.Background(), "demo", upstream); err != nil {
+	if _, err := m.Git().Add(context.Background(), "demo", upstream, repo.AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	// Drop leftover sessions so their holders do not outlive the test.
@@ -103,11 +104,11 @@ func TestSamePathIsolatedViews(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
 
-	a, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a", Backend: "overlay"})
+	a, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "a", Backend: "overlay"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "b", Backend: "overlay"})
+	b, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "b", Backend: "overlay"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +152,7 @@ func TestSamePathIsolatedViews(t *testing.T) {
 
 	for _, id := range []string{"a", "b"} {
 		var out bytes.Buffer
-		if err := m.Push(ctx, id, "", &out, &out); err != nil {
+		if err := m.Git().Push(ctx, id, "", &out, &out); err != nil {
 			t.Fatalf("push %s: %v\n%s", id, err, out.String())
 		}
 	}
@@ -247,7 +248,7 @@ func background(m *manager.Manager, id string, argv ...string) func() (string, e
 
 func TestConcurrentExecSharesOneMount(t *testing.T) {
 	m, _ := setup(t)
-	if _, err := m.Spawn(context.Background(), manager.SpawnOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
+	if _, err := m.Git().Spawn(context.Background(), manager.GitSpawnOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
 		t.Fatal(err)
 	}
 	const wait = `i=0; while [ ! -f "$1" ]; do sleep 0.02; i=$((i+1)); [ $i -lt 500 ] || exit 3; done`
@@ -269,7 +270,7 @@ func TestConcurrentExecSharesOneMount(t *testing.T) {
 
 func TestHolderRecovery(t *testing.T) {
 	m, _ := setup(t)
-	if _, err := m.Spawn(context.Background(), manager.SpawnOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
+	if _, err := m.Git().Spawn(context.Background(), manager.GitSpawnOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
 		t.Fatal(err)
 	}
 	execIn(t, m, "s", "sh", "-c", "echo kept > X")

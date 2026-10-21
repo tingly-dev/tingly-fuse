@@ -38,7 +38,7 @@ func setupShared(t *testing.T) (*manager.Manager, string) {
 
 	m := manager.New(filepath.Join(tmp, "home"))
 	dropAll(t, m)
-	if _, err := m.AddRepoWith(context.Background(), "demo", upstream, repo.AddOptions{SharedGit: true}); err != nil {
+	if _, err := m.Git().Add(context.Background(), "demo", upstream, repo.AddOptions{SharedGit: true}); err != nil {
 		t.Fatal(err)
 	}
 	return m, upstream
@@ -53,7 +53,7 @@ func testSharedGit(t *testing.T) {
 	m, upstream := setupShared(t)
 	ctx := context.Background()
 	for _, id := range []string{"a", "b"} {
-		if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: id}); err != nil {
+		if _, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: id}); err != nil {
 			t.Fatal(err)
 		}
 		if got := execIn(t, m, id, "git", "status", "--porcelain", "--ignore-submodules=none"); got != "" {
@@ -91,7 +91,7 @@ func testSharedGit(t *testing.T) {
 	fsckView(t, m, "a")
 	fsckView(t, m, "b")
 
-	if err := m.Push(ctx, "a", "", nil, nil); err != nil {
+	if err := m.Git().Push(ctx, "a", "", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := git(t, upstream, "log", "-1", "--format=%s", "agent/a"); got != "from-a" {
@@ -124,18 +124,18 @@ func TestSharedRefsSurviveMirrorGC(t *testing.T) { eachBackend(t, testSharedRefs
 func testSharedRefsSurviveMirrorGC(t *testing.T) {
 	m, upstream := setupShared(t)
 	ctx := context.Background()
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "s"}); err != nil {
+	if _, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	commitTo(t, upstream, "feature", "f.txt", "feature\n", false)
-	if err := m.FetchRepo(ctx, "demo"); err != nil {
+	if err := m.Git().Fetch(ctx, "demo"); err != nil {
 		t.Fatal(err)
 	}
 	execIn(t, m, "s", "git", "fetch", "--quiet", "origin")
 	git(t, upstream, "branch", "-D", "feature")
 	commitTo(t, upstream, "main", "g.txt", "rewrite\n", true)
 
-	if err := m.FetchRepo(ctx, "demo"); err != nil {
+	if err := m.Git().Fetch(ctx, "demo"); err != nil {
 		t.Fatal(err)
 	}
 	fetchAndCollect(t, m, "demo")
@@ -154,7 +154,7 @@ func testSharedGitFromDir(t *testing.T) {
 	git(t, filepath.Dir(dir), "-c", "protocol.file.allow=always", "clone", "--quiet", "--recurse-submodules", upstream, dir)
 	os.WriteFile(filepath.Join(dir, "built.out"), []byte("artifact\n"), 0o644)
 	head := git(t, dir, "rev-parse", "HEAD")
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", FromDir: dir, ID: "s"}); err != nil {
+	if _, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", FromDir: dir, ID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := execIn(t, m, "s", "git", "status", "--porcelain", "--ignore-submodules=none"); got != "?? built.out" {
