@@ -227,10 +227,10 @@ func testSpawnShares(t *testing.T) {
 		t.Errorf("a shares %v", s.Shared)
 	}
 	execIn(t, m, "a", "sh", "-c", "echo t > tmp/t && echo l > logs/l && echo c > cache/c && echo o > out/o")
-	if got := execIn(t, m, "b", "sh", "-c", "cat tmp/t cache/c out/o; ls logs 2>/dev/null | wc -l"); got != "t\nc\no\n0" {
+	if got := execIn(t, m, "b", "sh", "-c", "cat tmp/t cache/c out/o; ls logs 2>/dev/null | wc -l | tr -d ' '"); got != "t\nc\no\n0" {
 		t.Errorf("b sees %q", got)
 	}
-	if got := execIn(t, m, "c", "sh", "-c", "cat cache/c out/o; ls tmp logs 2>/dev/null | wc -l"); got != "c\no\n0" {
+	if got := execIn(t, m, "c", "sh", "-c", "cat cache/c out/o; ls tmp logs 2>/dev/null | wc -l | tr -d ' '"); got != "c\no\n0" {
 		t.Errorf("c sees %q", got)
 	}
 }
