@@ -1,0 +1,1 @@
+date: 2026-10-22T06:09:57Z  part: deps  upstream: https://github.com/tingly-dev/tingly-box @ 374ad23  N=3  kernel: 6.18.44-fc-v140  cpus: 4  fs: ext4  git: 2.43.0  tingly-fuse: 19c3f21

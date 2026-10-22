@@ -21,7 +21,6 @@ func usable(t *testing.T, name string) error {
 		return nil
 	}
 	tmp := t.TempDir()
-	t.Setenv(overlay.EnvViewRoot, filepath.Join(tmp, "workspace"))
 	ws := backend.Workspace{ID: "probe", Repo: "probe", BaseDir: filepath.Join(tmp, "base"), StateDir: filepath.Join(tmp, "state")}
 	os.MkdirAll(ws.BaseDir, 0o755)
 	b := overlay.Backend{}

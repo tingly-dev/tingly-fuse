@@ -29,7 +29,6 @@ func git(t *testing.T, dir string, args ...string) string {
 func TestAPI(t *testing.T) {
 	for _, b := range tinglyfuse.Backends() {
 		t.Run(b, func(t *testing.T) {
-			t.Setenv("TINGLY_FUSE_VIEW_ROOT", filepath.Join(t.TempDir(), "workspace"))
 			if err := tinglyfuse.CheckBackend(context.Background(), b); err != nil {
 				t.Skipf("backend %s unavailable: %v", b, err)
 			}
@@ -44,7 +43,6 @@ func testAPI(t *testing.T, backend string) {
 		t.Setenv(k, v)
 	}
 	tmp := t.TempDir()
-	t.Setenv("TINGLY_FUSE_VIEW_ROOT", filepath.Join(tmp, "workspace"))
 	t.Setenv("TINGLY_FUSE_HOME", filepath.Join(tmp, "home"))
 	src := filepath.Join(tmp, "src")
 	git(t, tmp, "init", "--quiet", "--initial-branch=main", src)

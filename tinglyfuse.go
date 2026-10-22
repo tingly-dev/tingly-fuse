@@ -32,7 +32,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
 	_ "github.com/tingly-dev/tingly-fuse/internal/backend/clone"
@@ -113,7 +112,7 @@ func CheckBackend(ctx context.Context, name string) error {
 		return err
 	}
 	defer os.RemoveAll(tmp)
-	ws := backend.Workspace{ID: "probe", Repo: ".probe-" + filepath.Base(tmp), BaseDir: filepath.Join(tmp, "base"), StateDir: filepath.Join(tmp, "state")}
+	ws := backend.Workspace{ID: "probe", Repo: "probe", BaseDir: filepath.Join(tmp, "base"), StateDir: filepath.Join(tmp, "state")}
 	for _, d := range []string{ws.BaseDir, ws.StateDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
@@ -122,12 +121,7 @@ func CheckBackend(ctx context.Context, name string) error {
 	if ws.ViewPath, err = b.Create(ctx, ws); err != nil {
 		return err
 	}
-	defer func() {
-		b.Remove(context.WithoutCancel(ctx), ws)
-		if !strings.HasPrefix(ws.ViewPath, tmp) {
-			os.Remove(ws.ViewPath) // overlay's mount point under its view root
-		}
-	}()
+	defer b.Remove(context.WithoutCancel(ctx), ws)
 	cmd, err := b.Command(ctx, ws, []string{"true"})
 	if err != nil {
 		return err

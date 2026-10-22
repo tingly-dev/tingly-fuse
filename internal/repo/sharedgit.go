@@ -11,8 +11,8 @@ package repo
 // "branch already checked out" checks look at every entry under
 // worktrees/, so one session's gc never collects another session's staged
 // blobs. Each entry is locked, because under the overlay backend its path
-// (the same /workspace/<repo> for every session) does not exist outside the
-// session, and git worktree prune would otherwise delete it.
+// is an empty mount point on the host (the tree only exists inside the
+// session's namespace), and git worktree prune would otherwise delete it.
 
 import (
 	"context"

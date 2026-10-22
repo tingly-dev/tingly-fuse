@@ -17,7 +17,7 @@
 #   BENCH_WARM_BASE 设为 1 时，基础 checkout 预装 node_modules（测"预热底层"场景）
 #
 # copy 和 overlay 走 tingly-fuse 自己的后端；worktree 和 reflink 由脚本直接实现。
-# overlay 需要 Linux（root 或 unprivileged user ns），视图挂在 $TINGLY_FUSE_VIEW_ROOT（默认 /workspace）下。
+# overlay 需要 Linux（root 或 unprivileged user ns），每个会话的视图在 $TFHOME/sessions/<id>/root。
 set -euo pipefail
 
 UPSTREAM=${BENCH_UPSTREAM:-https://github.com/tingly-dev/tingly-box}
@@ -126,7 +126,7 @@ rl_create() {
 rl_inws() { (cd "$ROOT/rl/$1" && bash -c "$2"); }
 rl_cleanup() { rm -rf "$ROOT/rl" "$TFHOME"; }
 
-# overlay：tingly-fuse 的 overlay 后端（mount namespace + overlayfs，所有会话同一路径）。
+# overlay：tingly-fuse 的 overlay 后端（mount namespace + overlayfs，每会话一个路径；同一路径的旧数据见 bench/README.md）。
 ov_prepare() { prepare_base; }
 ov_create() { tf git worktree add tingly-box "$REV" --backend overlay --id "$1" >/dev/null; }
 ov_inws() { tf exec "$1" -- bash -c "$2"; }
