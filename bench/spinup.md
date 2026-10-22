@@ -1,54 +1,87 @@
-# 从零开 N 个工作区并构建（[spinup.sh](spinup.sh)）
+# 从零开 N 个工作区（[spinup.sh](spinup.sh)）
 
-问题：用 tingly-fuse 现有的功能给多个 agent 各开一个工作区、装好依赖、构建起来，和直接 `git clone` 或 `git worktree` 相比差多少。和 [README.md](README.md) 里的对比不同，这里**一次性成本也算在内**：每种做法都从空目录开始。
+问题：用 tingly-fuse 现有的功能给多个 agent 各开一个工作区，和直接 `git clone`、`git worktree` 比差多少。**一次性成本也算在内**，每组都从空目录开始。工作区做法和依赖方式分开测，每种组合跑 3 个工作区。
 
-2026-10-22，tingly-box `00b45f9`（含子模块），4 核、16 GB 的云虚拟机，内核 6.18，专用 ext4 回环盘（没有 reflink），单次测量。原始数据：[results/spinup-ext4.csv](results/spinup-ext4.csv)，环境：[results/spinup-env.txt](results/spinup-env.txt)。
+2026-10-22，tingly-box `374ad23`（含子模块），4 核、16 GB 云虚拟机，内核 6.18，专用 ext4 回环盘（没有 reflink），每组单次测量。原始数据：[results/spinup-deps-ext4.csv](results/spinup-deps-ext4.csv)，环境：[results/spinup-env.txt](results/spinup-env.txt)。
 
-## 做法
+## 测了什么
+
+工作区做法：
 
 | 做法 | 一次性准备 | 每个 agent |
 |---|---|---|
 | clone | 无 | `git clone --recurse-submodules`，走网络 |
 | worktree | 从上游 clone 一个主仓库 | `git worktree add`，再 `git submodule update --init`（子模块走网络） |
 | tf | `tingly-fuse git clone` | `git worktree add`（overlay） |
-| tf-share | 同 tf，加 `--share frontend/node_modules` | 同 tf |
-| tf-fromdir | 普通 clone 一份，`pnpm install`，用 `--from-dir` 做成 base，然后删掉这份 clone | `git worktree add --base <id>` |
 
-每个工作区接着跑 `git status`、`pnpm install --offline`（store 已预热，和工作区在同一块盘上）、`go build -trimpath ./cli/tingly-box`（所有做法共用一个 `GOCACHE`，每种做法开始前清空；模块缓存已预热）。所有做法的路径都各不相同（[0014](../.design/decisions/0014-per-session-view-path.md)），所以都加了 `-trimpath`；不加的话，每个新路径都要多花约 80 秒，各做法一样。
+依赖方式（frontend，pnpm）：
+
+| 依赖 | 做法 |
+|---|---|
+| 独立 store | 每个工作区自己的 pnpm store，联网安装，什么都不共享 |
+| 共享 store | 共用一个预热好的 store，各自一份 node_modules（离线安装） |
+| 共享 node_modules | `frontend/node_modules` 所有工作区共用一份：clone、worktree 用 bind mount，tf 用 `--share`，机制相同 |
+| 预装进 base | 只有 tf：普通 clone 一份装好依赖，`--from-dir` 做成只读 base |
+
+每个工作区依次：创建、`git status`、`pnpm install`、`pnpm build`（vite）。
 
 ## 结果
 
-第一个工作区包含一次性准备。增量是第 2、3 个工作区的平均值。
+每多开一个工作区（第 2、3 个的平均）：
 
-| 做法 | 第一个工作区 | 每多一个：创建 | 每多一个：pnpm | 每多一个：go build | 每多一个：合计 | 每多一个：磁盘 | 3 个总计 |
-|---|---|---|---|---|---|---|---|
-| clone | 200 s, 264 MB | 16.4 s | 3.9 s | 10.2 s | **30.7 s** | **263 MB** | 262 s, 791 MB |
-| worktree | 203 s, 384 MB | 7.8 s | 3.5 s | 9.5 s | **21.0 s** | **144 MB** | 246 s, 672 MB |
-| tf | 204 s, 1023 MB | 0.6 s | 8.5 s | 11.3 s | **20.8 s** | **787 MB** | 246 s, 2596 MB |
-| tf-share | 196 s, 1026 MB | 0.7 s | 1.4 s | 9.6 s | **11.9 s** | **0.8 MB** | 220 s, 1028 MB |
-| tf-fromdir | 201 s, 891 MB | 0.02 s | 1.3 s | 9.4 s | **11.0 s** | **12 MB** | 224 s, 915 MB |
+| 依赖 \ 做法 | clone | worktree | tf |
+|---|---|---|---|
+| 独立 store | 40.5 s, 920 MB | 28.2 s, 802 MB | 39.2 s, 1434 MB |
+| 共享 store | 29.6 s, 267 MB | 22.3 s, 149 MB | 23.4 s, 792 MB |
+| 共享 node_modules | 26.9 s, 241 MB | 18.2 s, 122 MB | **8.3 s, 6 MB** |
+| 预装进 base | — | — | **8.6 s, 18 MB** |
 
-按这个增量外推到 10 个 agent：clone 约 475 秒、2.6 GB；worktree 约 390 秒、1.7 GB；tf 约 390 秒、8.1 GB；tf-share 和 tf-fromdir 约 300 秒、1.0 GB。
+拆开看（每多一个，秒）：
+
+| 组合 | 创建 | pnpm install | 前端构建 |
+|---|---|---|---|
+| clone + 共享 store | 16.7 | 5.3 | 7.1 |
+| worktree + 共享 store | 8.8 | 5.8 | 7.3 |
+| worktree + 共享 node_modules | 9.1 | 2.1 | 6.7 |
+| tf + 共享 store | 0.7 | 15.2 | 7.0 |
+| tf + 共享 node_modules | 0.6 | 2.2 | 5.1 |
+| tf + 预装进 base | 0.02 | 2.4 | 5.7 |
+
+3 个工作区合计（含一次性准备）：
+
+| 依赖 \ 做法 | clone | worktree | tf |
+|---|---|---|---|
+| 独立 store | 142 s, 2760 MB | 103 s, 2641 MB | 127 s, 4539 MB |
+| 共享 store | 93 s, 801 MB | 82 s, 684 MB | 92 s, 2615 MB |
+| 共享 node_modules | 92 s, 1509 MB | 78 s, 1391 MB | 55 s, 1041 MB |
+| 预装进 base | — | — | 63 s, 929 MB |
 
 ## 结论
 
-1. **第一个工作区各做法都一样，约 200 秒，几乎全是冷的 `go build`（约 180 秒）。** 只开一两个工作区时，tingly-fuse 没有明显优势。
-2. **优势在后面每多开一个。** 带上依赖的做法（tf-share、tf-fromdir），每多一个 agent 约 11 秒、几 MB：比完整 clone 快约 3 倍、省约 250 MB；比 worktree 快约 2 倍、省约 140 MB。创建本身从 8–16 秒降到 0.02–0.7 秒。
-3. **直接用 overlay、不处理 node_modules 是最差的。** pnpm 在 overlay 里没法硬链接到 store（不同设备），每个工作区整份复制约 790 MB，10 个 agent 要 8 GB。要么用 `--share frontend/node_modules`，要么用 `--from-dir` 把装好的依赖放进 base。
-4. **剩下的大头是构建本身。** 每多一个工作区，`go build` 在缓存全热的情况下仍要约 10 秒（链接等），占增量的 80% 以上；第一个工作区的 180 秒冷构建是总时间的大头。git 和文件这一层已经不是瓶颈，再往下要做的是构建产物、缓存的共享。
+1. **tingly-fuse 配上共享 node_modules 或预装进 base，每多一个工作区约 8 秒、几 MB。** worktree 最好也要 18 秒、122 MB，clone 要 27 秒以上、240 MB 以上。省下的主要是创建（worktree 9 秒、clone 17 秒，tf 不到 1 秒）和源码树的磁盘（每份约 120–240 MB）。
+2. **tf 配"共享 store"反而最费盘（每个 792 MB）。** pnpm 用 store 的方式是把文件硬链接进 node_modules；overlay 里的工作区和外面的 store 不在同一个挂载点，Linux 不允许跨挂载点硬链接，pnpm 就退回整份复制。clone 和 worktree 是普通目录，硬链接能用，所以只多 26 MB 左右。所以在 tf 下，依赖要么共享 node_modules，要么预装进 base，不能只靠共享 store。
+3. **共享 node_modules 时第一个工作区也要整份复制一次**（bind mount 同样跨挂载点），之后的工作区直接复用。clone 和 worktree 用 bind mount 共享时也一样，所以它们这一行的合计比"共享 store"还大。
+4. **前端构建各组都是 5–8 秒，依赖怎么放对构建速度没有明显影响。** vite build 没有跨次构建的缓存，"共享构建缓存"对它不适用。
+5. 只开 1 个工作区时差别不大；差别随工作区数量线性增长。
 
-## 说明
+## Go 构建（只跑了一部分，按要求停了）
 
-- `tf` 的创建 0.6 秒，差别多半来自 `git worktree add` 默认先 fetch 上游（tf-fromdir 用 `--base`，不 fetch，只要 0.02 秒）；没有单独测 `--no-fetch`。
-- tf-share 第一个工作区的 pnpm 仍整份复制了 786 MB：共享目录是 bind mount，跨挂载点同样不能硬链接。之后的工作区直接复用这一份。
-- tf-share 的共享 `node_modules` 是所有会话写同一份，适合依赖相同的 agent；依赖要改时用 tf-fromdir 更稳。
-- tf-fromdir 的一次性准备（28 秒、879 MB）包括 clone、`pnpm install` 和快照；base 里的 node_modules 是整份复制的（ext4 没有 reflink），在 XFS、btrfs 或 APFS 上会小很多。
-- clone 和 worktree 的创建时间包含网络（clone 整个仓库；worktree 拉子模块），波动较大。
+[results/spinup-gobuild-partial-ext4.csv](results/spinup-gobuild-partial-ext4.csv)：每个工作区创建后 `go build ./cli/tingly-box`。
+
+| 构建缓存 | clone | worktree | tf |
+|---|---|---|---|
+| 全私有（模块缓存和构建缓存各一份） | 286 s, 3.3 GB | 284 s, 3.3 GB | 282 s, 3.3 GB |
+| 共享模块缓存，构建缓存各一份 | 274 s, 2.1 GB | 273 s, 2.2 GB | 273 s, 2.1 GB |
+| 都共享，不加 `-trimpath` | 152 s, 1.4 GB | 未跑 | 未跑 |
+
+（每多一个工作区的 go build 耗时和磁盘。）Go 构建和工作区做法无关，只看缓存：不共享时每个工作区都是约 4.5 分钟的冷构建。都共享并加 `-trimpath` 的那组没跑完；本仓库 [ADR 0014](../.design/decisions/0014-per-session-view-path.md) 里单独测过，第二个路径约 10 秒。
 
 ## 复跑
 
 ```sh
 truncate -s 16G bench.img && mkfs.ext4 -q bench.img && mkdir -p /mnt/bench && mount -o loop bench.img /mnt/bench
 go build -o /usr/local/bin/tingly-fuse ./cmd/tingly-fuse
-bench/spinup.sh setup && bench/spinup.sh run    # 结果在 ./bench-out/spinup.csv
+bench/spinup.sh setup && bench/spinup.sh deps    # 结果在 ./bench-out/spinup.csv；bench/spinup.sh build 测 Go 构建（很慢）
 ```
+
+脚本可以续跑：已完成的组合会跳过。
