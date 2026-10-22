@@ -27,7 +27,24 @@
 
 ## 结果
 
-每多开一个工作区（第 2、3 个的平均）：
+每多开一个工作区（第 2、3 个的平均），按步骤拆开：仓库（创建工作区，不含依赖）、依赖（`pnpm install`）、构建（`pnpm build`）。
+
+| 组合 | 仓库 | 依赖 | 构建 | 合计 |
+|---|---|---|---|---|
+| clone + 共享 store | 16.7 s, 235 MB | 5.3 s, 26 MB | 7.1 s, 5 MB | 29.6 s, 267 MB |
+| worktree + 共享 store | 8.8 s, 117 MB | 5.8 s, 26 MB | 7.3 s, 5 MB | 22.3 s, 149 MB |
+| tf + 共享 store | 0.7 s, 0.1 MB | 15.2 s, 786 MB | 7.0 s, 5 MB | 23.4 s, 792 MB |
+| clone + 共享 node_modules | 17.8 s, 235 MB | 2.2 s, 0.2 MB | 6.5 s, 5 MB | 26.9 s, 241 MB |
+| worktree + 共享 node_modules | 9.1 s, 117 MB | 2.1 s, 0.2 MB | 6.7 s, 5 MB | 18.2 s, 122 MB |
+| tf + 共享 node_modules | 0.6 s, 0.1 MB | 2.2 s, 0.2 MB | 5.1 s, 5 MB | 8.3 s, 6 MB |
+| tf + 预装进 base | 0.02 s, 0.1 MB | 2.4 s, 12 MB | 5.7 s, 5 MB | 8.6 s, 18 MB |
+| clone + 独立 store | 18.8 s, 236 MB | 15.2 s, 679 MB | 6.2 s, 5 MB | 40.5 s, 920 MB |
+| worktree + 独立 store | 8.4 s, 118 MB | 13.0 s, 679 MB | 6.5 s, 5 MB | 28.2 s, 802 MB |
+| tf + 独立 store | 0.8 s, 0.1 MB | 31.2 s, 1428 MB | 6.9 s, 5 MB | 39.2 s, 1434 MB |
+
+只看仓库这一步，tf 每个工作区 0.1 MB、不到 1 秒；worktree 117 MB、约 9 秒；clone 235 MB、约 17 秒。tf 的差距全在依赖这一步：pnpm 在 overlay 里不能硬链接到 store。
+
+合计：
 
 | 依赖 \ 做法 | clone | worktree | tf |
 |---|---|---|---|
