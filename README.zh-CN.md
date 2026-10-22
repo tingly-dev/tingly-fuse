@@ -44,7 +44,7 @@ tingly-fuse 把能共享的和必须私有的分开：
 1. `git clone` 登记一个 upstream，并镜像一次。
 2. `git worktree add` 确保所选 commit 的只读基础 checkout 存在，在其上建出会话视图和分支 `agent/<id>`。
 3. `exec` 在这个视图里运行命令（你的 agent、shell、构建）。
-4. `git push` 把会话分支推到真实的 upstream；`drop` 丢弃会话。
+4. 视图里的 `origin` 就是真实的 upstream，`git push origin HEAD` 就把会话分支推上去；`drop` 丢弃会话。
 
 普通目录跳过 Git 这几步：`base add` 把它快照成 base，`spawn` 在这份快照上建视图。
 
@@ -88,7 +88,7 @@ id=$(tingly-fuse git worktree add tingly-box main)
 tingly-fuse exec "$id" -- claude
 
 # 4. 把会话分支（agent/<id>）推到 upstream，然后在远端开 PR
-tingly-fuse git push "$id"
+tingly-fuse exec "$id" -- git push origin HEAD
 
 # 5. 用完删除会话。未推送的工作会丢失
 tingly-fuse drop "$id"
@@ -144,16 +144,12 @@ tingly-fuse base add data ~/datasets/eval                # 再拍一个快照，
 | `base add <name> <dir> [--share path]...` | 把 `dir` 快照成 `name` 新会话的起点；第一次运行时登记 `name`（`--share` 只能在这时给）。打印快照 id |
 | `spawn <name> [--base id] [--id id] [--backend name] [--share path]...` | 从最新快照（或 `--base` 指定的 base）新建会话并打印 id |
 
-Git 仓库。每个子命令都以对应的 git 命令命名，参数顺序也一样，会话就是一个 worktree（[ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)）：
+Git 仓库。每个子命令都以对应的 git 命令命名，参数顺序也一样，会话就是一个 worktree。只有这三个是在会话里跑 git 替代不了的；推送、拉取等直接在会话里跑 git（`exec <id> -- git push origin HEAD`），列出和删除会话用 `list`、`drop`（[ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)）：
 
 | 命令 | 对应 | 做什么 |
 |---|---|---|
 | `git clone <upstream> [<name>] [--shared-git] [--share path]...` | `git clone` | 登记仓库并建共享镜像；不给名字时取 `upstream` 的最后一段，和 `git clone` 给目录起名一样；`--share` 同时设置共享路径（可重复，也可逗号分隔，与 `share` 相同）；`--shared-git` 让所有会话成为同一个共享仓库的 worktree，分支和提交彼此立即可见（[ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)） |
 | `git worktree add <name> [<commit-ish>] [flags]` | `git worktree add` | 新建会话（带自己的分支）并打印 id |
-| `git worktree list [<name>]` | `git worktree list` | 列出 Git 仓库的会话 |
-| `git worktree remove <session>` | `git worktree remove` | 删除会话，未推送的工作会丢失 |
-| `git push <session> [<remote>]` | `git push` | 推送会话分支（默认 remote 是 `origin`，即真实 upstream） |
-| `git fetch <name>` | `git fetch` | 从 upstream 更新镜像 |
 | `git fsck <name> [--fix]` | `git fsck` | 检查每个 base 是否已固定（不会被 gc 清掉）、对象是否齐全；`--fix` 为旧 base 补上固定 |
 
 两种都适用：
@@ -169,7 +165,7 @@ Git 仓库。每个子命令都以对应的 git 命令命名，参数顺序也�
 | `base prune <name> [--dry-run]` | 删除所有没有会话在用的 base，比如旧的快照 |
 | `remove <name> [--force]` | 删除仓库和它所有的 base（以及镜像）；`--force` 先 drop 它的会话 |
 
-拆分之前的命令（`repo add`、`spawn`、`push`、`repo check`、`repo share` 等）现在会报错，并给出新的写法。
+拆分之前的命令（`repo add`、`spawn`、`push`、`repo check`、`repo share` 等），以及 `git push`、`git fetch`、`git worktree list/remove`，现在会报错，并给出新的写法。
 
 `git worktree add` 的参数（和 git 一样，选项可以放在位置参数前面或后面）：
 
@@ -204,7 +200,7 @@ m.Git().Clone(ctx, "https://github.com/tingly-dev/tingly-box", "box",
 	tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{".cache"}})
 s, _ = m.Git().AddWorktree(ctx, tinglyfuse.WorktreeOptions{Repo: "box", Commit: "main", Share: []string{"tmp"}})
 m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
-m.Git().Push(ctx, s.ID, "", os.Stdout, os.Stderr)
+m.Exec(ctx, s.ID, []string{"git", "push", "origin", "HEAD"}, nil, os.Stdout, os.Stderr)
 m.Drop(ctx, s.ID)
 ```
 

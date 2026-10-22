@@ -20,7 +20,7 @@
 //		tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{"node_modules/.cache"}})
 //	s, _ := m.Git().AddWorktree(ctx, tinglyfuse.WorktreeOptions{Repo: "box", Share: []string{".env"}})
 //	m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
-//	m.Git().Push(ctx, s.ID, "", os.Stdout, os.Stderr)
+//	m.Exec(ctx, s.ID, []string{"git", "push", "origin", "HEAD"}, nil, os.Stdout, os.Stderr) // plain git in the view
 //	m.Drop(ctx, s.ID)
 //
 // Importing it registers every backend this platform supports.

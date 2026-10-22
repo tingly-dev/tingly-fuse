@@ -91,7 +91,7 @@ func testSharedGit(t *testing.T) {
 	fsckView(t, m, "a")
 	fsckView(t, m, "b")
 
-	if err := m.Git().Push(ctx, "a", "", nil, nil); err != nil {
+	if err := m.Exec(ctx, "a", []string{"git", "push", "--quiet", "origin", "HEAD"}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := git(t, upstream, "log", "-1", "--format=%s", "agent/a"); got != "from-a" {
@@ -128,14 +128,14 @@ func testSharedRefsSurviveMirrorGC(t *testing.T) {
 		t.Fatal(err)
 	}
 	commitTo(t, upstream, "feature", "f.txt", "feature\n", false)
-	if err := m.Git().Fetch(ctx, "demo"); err != nil {
+	if err := fetchRepo(ctx, m, "demo"); err != nil {
 		t.Fatal(err)
 	}
 	execIn(t, m, "s", "git", "fetch", "--quiet", "origin")
 	git(t, upstream, "branch", "-D", "feature")
 	commitTo(t, upstream, "main", "g.txt", "rewrite\n", true)
 
-	if err := m.Git().Fetch(ctx, "demo"); err != nil {
+	if err := fetchRepo(ctx, m, "demo"); err != nil {
 		t.Fatal(err)
 	}
 	fetchAndCollect(t, m, "demo")
@@ -164,4 +164,14 @@ func testSharedGitFromDir(t *testing.T) {
 		t.Errorf("HEAD = %s, want %s", got, head)
 	}
 	fsckView(t, m, "s")
+}
+
+// fetchRepo updates repository name's mirror, as git worktree add does
+// before resolving a branch.
+func fetchRepo(ctx context.Context, m *manager.Manager, name string) error {
+	r, err := repo.Open(m.Home, name)
+	if err != nil {
+		return err
+	}
+	return r.Fetch(ctx)
 }

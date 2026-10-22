@@ -93,7 +93,6 @@ step "upstream: force-push main" sh -c "
 	cd '$work/w' && git switch --quiet main && git reset --quiet --hard HEAD~3 &&
 	echo rewritten > REWRITTEN && git add REWRITTEN && git commit --quiet -m rewrite &&
 	git push --quiet --force origin main"
-step "git fetch" "$TF_NEW" git fetch r
 gc_all() {
 	for m in "$TINGLY_FUSE_HOME"/repos/r/objects.git "$TINGLY_FUSE_HOME"/repos/r/modules/*.git; do
 		[ -d "$m" ] || continue

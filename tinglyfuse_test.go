@@ -102,14 +102,11 @@ func testAPI(t *testing.T, backend string) {
 	if got := run("b", "sh", "-c", "cat cache/c tmp/t; git log -1 --format=%s agent/a; echo $"+tinglyfuse.EnvSession); got != "c\nt\nfrom-a\nb" {
 		t.Errorf("b sees %q", got)
 	}
-	if err := m.Git().Push(ctx, "a", "", nil, nil); err != nil {
+	if err := m.Exec(ctx, "a", []string{"git", "push", "--quiet", "origin", "HEAD"}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := git(t, upstream, "log", "-1", "--format=%s", "agent/a"); got != "from-a" {
 		t.Errorf("upstream agent/a = %q", got)
-	}
-	if wts, err := m.Git().Worktrees("demo"); err != nil || len(wts) != 2 {
-		t.Errorf("Worktrees = %v, %v", wts, err)
 	}
 	bases, err := m.Bases(ctx, "demo")
 	if err != nil || len(bases) != 1 || len(bases[0].Sessions) != 2 {
@@ -125,7 +122,7 @@ func testAPI(t *testing.T, backend string) {
 		}
 	}
 	for _, s := range sessions {
-		if err := m.Git().RemoveWorktree(ctx, s.ID); err != nil {
+		if err := m.Drop(ctx, s.ID); err != nil {
 			t.Fatal(err)
 		}
 	}

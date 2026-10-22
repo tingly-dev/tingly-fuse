@@ -106,12 +106,15 @@ func TestCommands(t *testing.T) {
 	c.fails(2, []string{"usage:"})
 	c.fails(1, []string{"usage:"}, "nope")
 	c.fails(1, []string{"git clone", "base list"}, "repo")
-	c.fails(1, []string{"git push", "git worktree add"}, "push", "x")
+	c.fails(1, []string{"git push origin HEAD", "git worktree add"}, "push", "x")
 	c.fails(1, []string{"usage: tingly-fuse git"}, "git")
 	c.fails(1, []string{"usage: tingly-fuse git worktree add"}, "git", "worktree", "add")
 	c.fails(1, []string{"usage: tingly-fuse git worktree"}, "git", "worktree")
 	c.fails(1, []string{"usage: tingly-fuse git clone"}, "git", "clone")
-	c.fails(1, []string{"usage: tingly-fuse git push"}, "git", "push")
+	c.fails(1, []string{"exec <session> -- git push origin HEAD"}, "git", "push", "a")
+	c.fails(1, []string{"git worktree add fetches"}, "git", "fetch", "demo")
+	c.fails(1, []string{"use list"}, "git", "worktree", "list")
+	c.fails(1, []string{"use drop"}, "git", "worktree", "remove", "a")
 	c.fails(1, []string{"git worktree add <name>"}, "git", "spawn", "demo")
 	c.fails(1, []string{"git clone <upstream>"}, "git", "add", "demo", "x")
 	c.fails(1, []string{"git fsck <name>"}, "git", "check", "demo")
@@ -138,7 +141,6 @@ func TestCommands(t *testing.T) {
 	if out := c.ok("base", "list"); !strings.Contains(out, "demo") || !strings.Contains(out, "SESSIONS") {
 		t.Errorf("base list:\n%s", out)
 	}
-	c.ok("git", "fetch", "demo")
 	c.fails(1, []string{"usage: tingly-fuse git clone"}, "git", "clone", upstream, "shared", "extra")
 	c.ok("git", "clone", "--shared-git", upstream, "shared")
 	if out := c.ok("base", "list"); !strings.Contains(out, "git (shared)") || !regexp.MustCompile(`demo +git +`).MatchString(out) {
@@ -202,16 +204,7 @@ func TestCommands(t *testing.T) {
 	}
 	c.fails(7, nil, "exec", "a", "--", "sh", "-c", "exit 7")
 	c.ok("exec", "a", "--", "sh", "-c", "echo a > a.txt && git add a.txt && git commit -qm a")
-	c.ok("git", "push", "a", "origin")
-	c.fails(1, []string{"usage: tingly-fuse git push"}, "git", "push", "a", "origin", "extra")
-	if out := c.ok("git", "worktree", "list", "demo"); !regexp.MustCompile(`(?m)^a +demo +feature/a `).MatchString(out) || !regexp.MustCompile(`(?m)^b +demo +agent/b `).MatchString(out) {
-		t.Errorf("git worktree list demo:\n%s", out)
-	}
-	c.ok("git", "worktree", "add", "demo", "--id", "gone", "--backend", "copy")
-	c.ok("git", "worktree", "remove", "gone")
-	if out := c.ok("git", "worktree", "list"); strings.Contains(out, "gone") {
-		t.Errorf("removed worktree still listed:\n%s", out)
-	}
+	c.ok("exec", "a", "--", "git", "push", "--quiet", "origin", "HEAD")
 	if got := git(t, upstream, "branch", "--list", "feature/a", "--format=%(refname:short)"); got != "feature/a" {
 		t.Errorf("pushed branches = %q", got)
 	}
@@ -279,12 +272,6 @@ func TestCommands(t *testing.T) {
 	c.fails(1, []string{"not a git repository"}, "git", "fsck", "data")
 	if out := c.ok("spawn", "data", "--id", "p1", "--backend", "copy"); !strings.HasPrefix(out, "p1\n") || strings.Contains(out, "branch:") || !strings.Contains(out, "base: "+first) {
 		t.Errorf("spawn output:\n%s", out)
-	}
-	c.fails(1, []string{"not a git repository"}, "git", "push", "p1")
-	c.fails(1, []string{"not a git repository"}, "git", "worktree", "remove", "p1")
-	c.fails(1, []string{"not a git repository"}, "git", "worktree", "list", "data")
-	if out := c.ok("git", "worktree", "list"); strings.Contains(out, "p1") {
-		t.Errorf("git worktree list shows a directory session:\n%s", out)
 	}
 	c.fails(1, []string{"usage: tingly-fuse spawn"}, "spawn", "data", "extra")
 	os.WriteFile(filepath.Join(data, "f"), []byte("v2\n"), 0o644)

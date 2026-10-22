@@ -44,7 +44,7 @@ On Linux, every session sees the repository at **the same path** (`/workspace/<r
 1. `git clone` registers an upstream and mirrors it once.
 2. `git worktree add` makes sure a read-only base checkout exists for the chosen commit, then creates a session view on top of it and a branch `agent/<id>`.
 3. `exec` runs a command (your agent, a shell, a build) inside that view.
-4. `git push` pushes the session's branch to the real upstream. `drop` throws the session away.
+4. Inside the view, `origin` is the real upstream, so `git push origin HEAD` pushes the session's branch. `drop` throws the session away.
 
 A plain directory skips the git steps: `base add` snapshots it as the base, and `spawn` creates views of that snapshot.
 
@@ -88,7 +88,7 @@ id=$(tingly-fuse git worktree add tingly-box main)
 tingly-fuse exec "$id" -- claude
 
 # 4. Push the session's branch (agent/<id>) to the upstream, then open a PR there.
-tingly-fuse git push "$id"
+tingly-fuse exec "$id" -- git push origin HEAD
 
 # 5. Remove the session when you are done. Unpushed work is lost.
 tingly-fuse drop "$id"
@@ -144,16 +144,12 @@ Any directory:
 | `base add <name> <dir> [--share path]...` | Snapshot `dir` as the base new sessions of `name` start from, registering `name` the first time (`--share` only then). Prints the snapshot id |
 | `spawn <name> [--base id] [--id id] [--backend name] [--share path]...` | Create a session from the latest snapshot, or from `--base`, and print its id |
 
-Git repositories. Each subcommand is named after the git command it corresponds to and takes its arguments in the same order, so a session is a worktree ([ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)):
+Git repositories. Each subcommand is named after the git command it corresponds to and takes its arguments in the same order, so a session is a worktree. There are only the three that a git command run inside a session cannot replace; push, fetch and the rest are plain git in the session (`exec <id> -- git push origin HEAD`), and `list` and `drop` work on git sessions ([ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)):
 
 | Command | Like | What it does |
 |---|---|---|
 | `git clone <upstream> [<name>] [--shared-git] [--share path]...` | `git clone` | Register a repository and create its shared mirror; the name defaults to the last part of `upstream`, as `git clone` names its directory; `--share` sets shared paths right away (repeatable or comma-separated, same as `share`); `--shared-git` makes every session a worktree of one shared repository, so branches and commits are visible to all sessions ([ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)) |
 | `git worktree add <name> [<commit-ish>] [flags]` | `git worktree add` | Create a session on its own branch and print its id |
-| `git worktree list [<name>]` | `git worktree list` | List the sessions of git repositories |
-| `git worktree remove <session>` | `git worktree remove` | Delete a session; unpushed work is lost |
-| `git push <session> [<remote>]` | `git push` | Push the session's branch (default remote `origin`, which is the real upstream) |
-| `git fetch <name>` | `git fetch` | Update the mirror from upstream |
 | `git fsck <name> [--fix]` | `git fsck` | Check that every base is pinned against gc and still has all its objects; `--fix` pins old bases |
 
 Either kind:
@@ -169,7 +165,7 @@ Either kind:
 | `base prune <name> [--dry-run]` | Delete every base no session uses, such as old snapshots |
 | `remove <name> [--force]` | Delete the repository with all its bases (and mirror); `--force` drops its sessions first |
 
-The commands before this split (`repo add`, `spawn`, `push`, `repo check`, `repo share`, …) now fail with a message naming their new form.
+The commands before this split (`repo add`, `spawn`, `push`, `repo check`, `repo share`, …), and `git push`, `git fetch` and `git worktree list/remove`, now fail with a message naming their new form.
 
 `git worktree add` arguments (flags may come before or after the positional ones, as in git):
 
@@ -204,7 +200,7 @@ m.Git().Clone(ctx, "https://github.com/tingly-dev/tingly-box", "box",
 	tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{".cache"}})
 s, _ = m.Git().AddWorktree(ctx, tinglyfuse.WorktreeOptions{Repo: "box", Commit: "main", Share: []string{"tmp"}})
 m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
-m.Git().Push(ctx, s.ID, "", os.Stdout, os.Stderr)
+m.Exec(ctx, s.ID, []string{"git", "push", "origin", "HEAD"}, nil, os.Stdout, os.Stderr)
 m.Drop(ctx, s.ID)
 ```
 

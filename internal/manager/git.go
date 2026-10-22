@@ -2,7 +2,9 @@ package manager
 
 // The git layer (ADR 0013): repositories with an upstream, whose bases are
 // commits of a shared mirror, whose sessions each get a branch to push, and
-// which may share one .git (ADR 0010). Everything else, shared paths
+// which may share one .git (ADR 0010). It only does what a git command run
+// inside a session cannot: mirror the upstream, build and pin bases, and
+// check them. Push, fetch and the rest are plain git in the view. Everything else, shared paths
 // included, is the generic layer in manager.go.
 
 import (
@@ -141,59 +143,6 @@ func (g *Git) AddWorktree(ctx context.Context, opts WorktreeOptions) (*session.S
 	})
 }
 
-// Fetch updates the repository's mirror from upstream.
-func (g *Git) Fetch(ctx context.Context, name string) error {
-	r, err := g.open(name)
-	if err != nil {
-		return err
-	}
-	return r.Fetch(ctx)
-}
-
-// Worktrees lists the sessions of git repositories, or of repository name
-// when it is set, oldest first.
-func (g *Git) Worktrees(name string) ([]*session.Session, error) {
-	if name != "" {
-		if _, err := g.open(name); err != nil {
-			return nil, err
-		}
-	}
-	sessions, err := g.m.sessions.List()
-	if err != nil {
-		return nil, err
-	}
-	gitRepo := map[string]bool{}
-	var out []*session.Session
-	for _, s := range sessions {
-		if name != "" && s.Repo != name {
-			continue
-		}
-		isGit, ok := gitRepo[s.Repo]
-		if !ok {
-			r, err := repo.Open(g.m.Home, s.Repo)
-			isGit = err == nil && r.IsGit()
-			gitRepo[s.Repo] = isGit
-		}
-		if isGit {
-			out = append(out, s)
-		}
-	}
-	return out, nil
-}
-
-// RemoveWorktree drops a session of a git repository, like git worktree
-// remove; see Manager.Drop.
-func (g *Git) RemoveWorktree(ctx context.Context, id string) error {
-	sess, err := g.m.sessions.Get(id)
-	if err != nil {
-		return err
-	}
-	if _, err := g.open(sess.Repo); err != nil {
-		return err
-	}
-	return g.m.Drop(ctx, id)
-}
-
 // BaseHealth is the state of one base as Fsck sees it.
 type BaseHealth struct {
 	ID       string
@@ -234,19 +183,6 @@ func (g *Git) Fsck(ctx context.Context, name string, fix bool) ([]BaseHealth, er
 		out = append(out, h)
 	}
 	return out, nil
-}
-
-// Push pushes the session's branch to remote (default origin, the upstream).
-func (g *Git) Push(ctx context.Context, id, remote string, stdout, stderr io.Writer) error {
-	sess, b, ws, err := g.m.load(id)
-	if err != nil {
-		return err
-	}
-	if _, err := g.open(sess.Repo); err != nil {
-		return err
-	}
-	argv := []string{"git", "push", orDefault(remote, "origin"), "HEAD:refs/heads/" + sess.Branch}
-	return g.m.run(ctx, b, ws, sess, argv, nil, stdout, stderr)
 }
 
 // open opens a registered git repository.

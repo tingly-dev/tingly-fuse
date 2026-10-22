@@ -20,17 +20,19 @@
    |---|---|---|
    | `git clone <upstream> [<name>] [--shared-git] [--share p]` | `git clone <repo> [<dir>]`，名字默认取 URL 最后一段去掉 `.git` | `repo add <name> <upstream>` |
    | `git worktree add <name> [<commit-ish>] [-b <branch>]`，另有 `--from-dir`、`--base`、`--no-fetch` | `git worktree add [-b <branch>] <path> [<commit-ish>]` | `spawn <repo> --from <rev> --branch <b>` |
-   | `git worktree list [<name>]` | `git worktree list` | `list` 里的 git 会话 |
-   | `git worktree remove <session>` | `git worktree remove` | `drop` |
-   | `git push <session> [<remote>]` | `git push [<remote>]` | `push <session> --remote <r>` |
-   | `git fetch <name>` | `git fetch` | `repo fetch` |
    | `git fsck <name> [--fix]` | `git fsck`；`--fix` 给旧 base 补固定 ref | `repo check` |
 
    选项可以放在位置参数前后，和 git 一样。`git add`、`git spawn`、`git check` 报错并给出新名字。
+8. **只做会话里跑 git 做不到的事。** 上面三个子命令分别是建共享镜像、从 commit 建并固定 base、检查会话外的 base 和镜像，这些在会话里跑 git 做不到。其他的都不单独提供（YZ 2026-10-22：支持的 git 命令过多）：
+   - 推送：会话里的 origin 就是真实的 upstream，`exec <session> -- git push origin HEAD`。
+   - 拉取：`git worktree add` 解析分支或标签前总会先 fetch 镜像；会话里要更新就 `exec <session> -- git fetch`。
+   - 列出、删除会话：`list`、`drop`。
+
+   `push`、`git push`、`git fetch`、`git worktree list/remove` 报错并给出替代写法。
 4. **通用层不解释目录内容。** 不 fetch、不建分支、不判断哪些路径被跟踪、不写 `info/exclude`。目录里如果有 `.git`，它也只是普通文件，每个会话一份私有拷贝。唯一保留的是 `.git` 不能设为共享路径：共享它就等于所有会话共用 HEAD 和 index。
 5. **`current` 不会被删。** `base rm` 拒绝删除它，`base prune` 跳过它，先 `base add` 一个新快照才能删旧的。
 6. **旧命令明确报错，不保留别名。** `repo ...` 和 `push` 会报错并列出新名字。
-7. **Go API 也分两层。** 通用：`Manager.AddDir`、`Manager.Spawn(SpawnOptions)`，以及 `Exec`、`Drop`、`Sessions`、`Shares`、`SetShares`、`Bases`、`RemoveBase`、`PruneBases`、`RemoveRepo`、`Repos`、`Repo`。Git：`Manager.Git()` 返回 `*Git`，方法同样按 git 命名：`Clone`、`AddWorktree(WorktreeOptions)`、`Worktrees`、`RemoveWorktree`、`Push`、`Fetch`、`Fsck`。原来的 `AddRepo`、`AddRepoWith`、`FetchRepo`、`CheckRepo`、`Push` 去掉。
+7. **Go API 也分两层。** 通用：`Manager.AddDir`、`Manager.Spawn(SpawnOptions)`，以及 `Exec`、`Drop`、`Sessions`、`Shares`、`SetShares`、`Bases`、`RemoveBase`、`PruneBases`、`RemoveRepo`、`Repos`、`Repo`。Git：`Manager.Git()` 返回 `*Git`，方法同样按 git 命名：`Clone`、`AddWorktree(WorktreeOptions)`、`Fsck`；推送用 `Exec` 跑 `git push`。原来的 `AddRepo`、`AddRepoWith`、`FetchRepo`、`CheckRepo`、`Push` 去掉。
 
 ## 理由
 
@@ -55,6 +57,6 @@
 
 - `internal/manager/dir_test.go`：快照之后改源目录，已有会话看不到；第二次 `base add` 只影响之后的会话；`--base` 能从旧快照出发；共享路径互相可见、其余文件私有；当前快照不会被 prune 或 rm（去掉这项保护时测试失败）；目录里的 `.git` 每会话一份，提交不互相影响，被跟踪的文件也能共享（让通用层去判断被跟踪路径时测试失败）；两层互相拒绝对方的仓库（去掉 `spawn` 对 git 仓库的拒绝时测试失败）；登记失败不留目录。
 - CLI 测试覆盖全部新命令、旧命令的报错，以及 `base list` 的两种输出；`TestAPI` 只用公开包走完两层。
-- `TestRepoNameFromURL`：`git clone` 不给名字时，https、`.git` 后缀、结尾斜杠、scp 风格地址、本地路径都取到和 git 一样的名字。CLI 测试覆盖选项放在位置参数前后、`git worktree list/remove` 只认 git 会话。
+- `TestRepoNameFromURL`：`git clone` 不给名字时，https、`.git` 后缀、结尾斜杠、scp 风格地址、本地路径都取到和 git 一样的名字。CLI 测试覆盖选项放在位置参数前后，以及去掉的命令给出的替代写法；推送在测试里都改成会话里跑 `git push origin HEAD`，上游收到了对应分支。
 - `bench/lifecycle.sh` 在真实 tingly-box 上用 `git` 子命令跑完，copy 和 overlay 都 0 失败；用 PR #9 合并后的旧版本建 base、新版本检查和修复（升级路径），也是 0 失败。
 - 在 tingly-box 的浅克隆（64 MB）上：`base add` 1.3 秒，两个 overlay 会话各占约 400 KB，共享的 `.cache` 互相可见，一个会话改的 `README.md` 另一个看不到。

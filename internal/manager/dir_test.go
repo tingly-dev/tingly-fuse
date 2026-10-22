@@ -174,9 +174,7 @@ func TestLayerRefusals(t *testing.T) {
 	notGit := "plain directory, not a git repository"
 	for name, err := range map[string]error{
 		"git worktree add": func() error { _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "d"}); return err }(),
-		"git fetch":        m.Git().Fetch(ctx, "d"),
 		"git fsck":         func() error { _, err := m.Git().Fsck(ctx, "d", false); return err }(),
-		"git push":         m.Git().Push(ctx, "s", "", nil, nil),
 	} {
 		if err == nil || !strings.Contains(err.Error(), notGit) {
 			t.Errorf("%s on a dir repo: %v", name, err)

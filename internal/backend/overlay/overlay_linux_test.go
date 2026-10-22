@@ -152,7 +152,7 @@ func TestSamePathIsolatedViews(t *testing.T) {
 
 	for _, id := range []string{"a", "b"} {
 		var out bytes.Buffer
-		if err := m.Git().Push(ctx, id, "", &out, &out); err != nil {
+		if err := m.Exec(ctx, id, []string{"git", "push", "--quiet", "origin", "HEAD"}, nil, &out, &out); err != nil {
 			t.Fatalf("push %s: %v\n%s", id, err, out.String())
 		}
 	}

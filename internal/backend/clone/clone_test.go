@@ -176,7 +176,7 @@ func TestManagerRoundTrip(t *testing.T) {
 			t.Fatalf("TINGLY_WORKSPACE = %q, want %q", ws, sess.ViewPath)
 		}
 		run(id, "sh", "-c", "echo "+id+" > "+id+".txt && git add . && git commit --quiet -m "+id)
-		if err := m.Git().Push(ctx, id, "", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		if err := m.Exec(ctx, id, []string{"git", "push", "--quiet", "origin", "HEAD"}, nil, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -10,9 +10,9 @@
 //
 //	tingly-fuse git clone <upstream> [<name>] [--shared-git] [--share path]...
 //	tingly-fuse git worktree add <name> [<commit-ish>] [-b branch] [--from-dir dir | --base id] [...]
-//	tingly-fuse git worktree list [<name>] / remove <session>
-//	tingly-fuse git push <session> [<remote>]
-//	tingly-fuse git fetch <name> / fsck <name> [--fix]
+//	tingly-fuse git fsck <name> [--fix]
+//
+// Pushing, fetching and the rest are plain git inside the session.
 //
 // Either:
 //
@@ -53,11 +53,9 @@ git repositories (named after the git commands they correspond to):
                                            create a session on its own branch (-b branch, default
                                            agent/<id>) and print its id; --from-dir dir or --base id
                                            start from a prepared directory or an existing base
-  tingly-fuse git worktree list [<name>]   list the sessions of git repositories
-  tingly-fuse git worktree remove <session> delete a session (unpushed work is lost)
-  tingly-fuse git push <session> [<remote>] push the session's branch (default remote: origin)
-  tingly-fuse git fetch <name>             update the repository's mirror from upstream
   tingly-fuse git fsck <name> [--fix]      verify every base is pinned and has all its objects
+  push, fetch and other git commands run inside the session, where origin is the
+  real upstream: tingly-fuse exec <session> -- git push origin HEAD
 
 either:
   tingly-fuse exec <session> -- <cmd>...   run a command inside a session's view
@@ -134,7 +132,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return m.RemoveRepo(ctx, args[0], *force)
 	case "repo", "push":
-		return fmt.Errorf("%s moved (ADR 0013): repo add, spawn, push, repo fetch and repo check are now git clone, git worktree add, git push, git fetch and git fsck; repo share, unshare, remove and list are share, unshare, remove and base list", cmd)
+		return fmt.Errorf("%s moved (ADR 0013): repo add, spawn and repo check are now git clone, git worktree add and git fsck; push is exec <session> -- git push origin HEAD; repo share, unshare, remove and list are share, unshare, remove and base list", cmd)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil
@@ -147,7 +145,7 @@ func run(ctx context.Context, args []string) error {
 // The git subcommands are named after the git commands they correspond
 // to, with the same argument order (ADR 0013).
 func runGit(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
-	const usage = "usage: tingly-fuse git clone <upstream> [<name>] | git worktree add|list|remove ... | git push <session> [<remote>] | git fetch <name> | git fsck <name> [--fix]"
+	const usage = "usage: tingly-fuse git clone <upstream> [<name>] | git worktree add <name> [<commit-ish>] | git fsck <name> [--fix]"
 	g := m.Git()
 	if len(args) == 0 {
 		return errors.New(usage)
@@ -179,20 +177,6 @@ func runGit(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 		return nil
 	case "worktree":
 		return runGitWorktree(ctx, g, args)
-	case "push":
-		if len(args) < 1 || len(args) > 2 {
-			return fmt.Errorf("usage: tingly-fuse git push <session> [<remote>]")
-		}
-		remote := ""
-		if len(args) == 2 {
-			remote = args[1]
-		}
-		return g.Push(ctx, args[0], remote, os.Stdout, os.Stderr)
-	case "fetch":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: tingly-fuse git fetch <name>")
-		}
-		return g.Fetch(ctx, args[0])
 	case "fsck":
 		fs := flag.NewFlagSet("git fsck", flag.ContinueOnError)
 		fix := fs.Bool("fix", false, "pin bases that are not pinned yet")
@@ -204,39 +188,26 @@ func runGit(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 			return fmt.Errorf("usage: tingly-fuse git fsck <name> [--fix]")
 		}
 		return runGitFsck(ctx, g, pos[0], *fix)
-	case "add", "spawn", "check":
-		return fmt.Errorf("git %s is now %s (named after the git command)", cmd, map[string]string{"add": "git clone <upstream> [<name>]", "spawn": "git worktree add <name> [<commit-ish>]", "check": "git fsck <name>"}[cmd])
+	case "add", "spawn", "check", "push", "fetch":
+		return fmt.Errorf("git %s: %s", cmd, map[string]string{
+			"add":   "use git clone <upstream> [<name>]",
+			"spawn": "use git worktree add <name> [<commit-ish>]",
+			"check": "use git fsck <name>",
+			"push":  "run git in the session: exec <session> -- git push origin HEAD",
+			"fetch": "git worktree add fetches a branch or tag first; inside a session, exec <session> -- git fetch",
+		}[cmd])
 	default:
 		return errors.New(usage)
 	}
 }
 
 func runGitWorktree(ctx context.Context, g *tinglyfuse.Git, args []string) error {
-	const usage = "usage: tingly-fuse git worktree add <name> [<commit-ish>] [flags] | git worktree list [<name>] | git worktree remove <session>"
-	if len(args) == 0 {
-		return errors.New(usage)
-	}
-	switch args[0] {
-	case "add":
+	const usage = "usage: tingly-fuse git worktree add <name> [<commit-ish>] [flags]"
+	switch {
+	case len(args) >= 1 && args[0] == "add":
 		return runGitWorktreeAdd(ctx, g, args[1:])
-	case "list":
-		if len(args) > 2 {
-			return fmt.Errorf("usage: tingly-fuse git worktree list [<name>]")
-		}
-		name := ""
-		if len(args) == 2 {
-			name = args[1]
-		}
-		sessions, err := g.Worktrees(name)
-		if err != nil {
-			return err
-		}
-		return printSessions(sessions)
-	case "remove":
-		if len(args) != 2 {
-			return fmt.Errorf("usage: tingly-fuse git worktree remove <session>")
-		}
-		return g.RemoveWorktree(ctx, args[1])
+	case len(args) >= 1 && (args[0] == "list" || args[0] == "remove"):
+		return fmt.Errorf("git worktree %s: use %s", args[0], map[string]string{"list": "list", "remove": "drop <session>"}[args[0]])
 	default:
 		return errors.New(usage)
 	}

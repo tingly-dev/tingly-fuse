@@ -46,9 +46,9 @@ Git 层，子命令按对应的 git 命令命名，会话就是一个 worktree�
 |---|---|
 | `git clone <upstream> [<name>]` | 登记仓库并建镜像，名字默认取 URL 最后一段（`--shared-git`：会话共享 refs 和新对象，见 [0010](decisions/0010-shared-git-via-registered-worktrees.md)） |
 | `git worktree add <name> [<commit-ish> \| --from-dir dir \| --base id] [-b branch]` | `--from-dir`：reflink 快照该目录并把其中对象并入镜像（[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)）；`--base`：复用已有 base；默认：解析 commit-ish 得到 commit（除完整 commit id 外先 fetch，`--no-fetch` 跳过）；固定 base 的对象；确保该 commit 的 base 存在（并发安全，先建临时目录再 rename）；之后和通用层一样建视图，再在视图里接上共享 `.git`、把未跟踪的共享路径写进 `info/exclude`、建分支 `agent/<id>` |
-| `git worktree list` / `git worktree remove` | 列出 git 仓库的会话；删除一个 git 会话（同 `drop`） |
-| `git push <session> [<remote>]` | 在视图里把分支推到真实的 upstream（base 的 origin 指向 upstream，不是本地镜像） |
-| `git fetch` / `git fsck [--fix]` | 更新镜像；逐个 base 检查是否已固定、`git fsck` 是否通过（`--fix` 给旧 base 补固定）（[0008](decisions/0008-pin-base-objects-in-mirrors.md)） |
+| `git fsck [--fix]` | 逐个 base 检查是否已固定、`git fsck` 是否通过（`--fix` 给旧 base 补固定）（[0008](decisions/0008-pin-base-objects-in-mirrors.md)） |
+
+推送、拉取等在会话里直接跑 git：base 的 origin 指向真实的 upstream（不是本地镜像），`exec <id> -- git push origin HEAD` 就把分支推上去。
 
 两种仓库都适用：
 
