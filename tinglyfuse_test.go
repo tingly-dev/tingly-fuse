@@ -68,7 +68,7 @@ func testAPI(t *testing.T, backend string) {
 			m.Drop(ctx, s.ID)
 		}
 	})
-	r, err := m.AddRepoWith(ctx, "demo", upstream, tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{"cache", "out"}})
+	r, err := m.Git().Clone(ctx, upstream, "demo", tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{"cache", "out"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func testAPI(t *testing.T, backend string) {
 
 	var sessions []*tinglyfuse.Session
 	for _, id := range []string{"a", "b"} {
-		s, err := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "demo", ID: id, Backend: backend, Share: []string{"tmp"}})
+		s, err := m.Git().AddWorktree(ctx, tinglyfuse.WorktreeOptions{Repo: "demo", ID: id, Backend: backend, Share: []string{"tmp"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -102,7 +102,7 @@ func testAPI(t *testing.T, backend string) {
 	if got := run("b", "sh", "-c", "cat cache/c tmp/t; git log -1 --format=%s agent/a; echo $"+tinglyfuse.EnvSession); got != "c\nt\nfrom-a\nb" {
 		t.Errorf("b sees %q", got)
 	}
-	if err := m.Push(ctx, "a", "", nil, nil); err != nil {
+	if err := m.Exec(ctx, "a", []string{"git", "push", "--quiet", "origin", "HEAD"}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := git(t, upstream, "log", "-1", "--format=%s", "agent/a"); got != "from-a" {
@@ -112,7 +112,7 @@ func testAPI(t *testing.T, backend string) {
 	if err != nil || len(bases) != 1 || len(bases[0].Sessions) != 2 {
 		t.Errorf("Bases = %+v, %v", bases, err)
 	}
-	health, err := m.CheckRepo(ctx, "demo", false)
+	health, err := m.Git().Fsck(ctx, "demo", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +127,32 @@ func testAPI(t *testing.T, backend string) {
 		}
 	}
 	if err := m.RemoveRepo(ctx, "demo", false); err != nil {
+		t.Fatal(err)
+	}
+
+	// The generic layer on a plain directory.
+	data := filepath.Join(tmp, "data")
+	if err := os.MkdirAll(filepath.Join(data, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(data, "f"), []byte("v1\n"), 0o644)
+	d, base, err := m.AddDir(ctx, "data", data, tinglyfuse.DirOptions{SharedPaths: []string{"cache"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Kind != tinglyfuse.KindDir || d.Current != base {
+		t.Errorf("dir repo = %+v", d)
+	}
+	for _, id := range []string{"p", "q"} {
+		if _, err := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "data", ID: id, Backend: backend}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("p", "sh", "-c", "echo c > cache/c && echo mine > f")
+	if got := run("q", "cat", "cache/c", "f"); got != "c\nv1" {
+		t.Errorf("q sees %q", got)
+	}
+	if err := m.RemoveRepo(ctx, "data", true); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -76,8 +76,8 @@ tf() { TINGLY_FUSE_HOME=$TFHOME "$TF" "$@"; }
 # 子模块对象同样用 alternates 指向镜像，基础目录里不留对象。
 prepare_base() {
   rm -rf "$TFHOME"
-  tf repo add tingly-box "$MIRROR" >/dev/null
-  tf spawn tingly-box --from "$REV" --backend copy --id prep >/dev/null
+  tf git clone "$MIRROR" tingly-box >/dev/null
+  tf git worktree add tingly-box "$REV" --backend copy --id prep >/dev/null
   tf drop prep
   BASE=$TFHOME/repos/tingly-box/bases/$REV
   git -C "$BASE" submodule update --init -q
@@ -113,7 +113,7 @@ wt_cleanup() { rm -rf "$ROOT/wt"; }
 
 # copy：tingly-fuse 自带的 copy 后端。
 copy_prepare() { prepare_base; }
-copy_create() { tf spawn tingly-box --from "$REV" --backend copy --id "$1" >/dev/null; }
+copy_create() { tf git worktree add tingly-box "$REV" --backend copy --id "$1" >/dev/null; }
 copy_inws() { tf exec "$1" -- bash -c "$2"; }
 copy_cleanup() { rm -rf "$TFHOME"; }
 
@@ -128,7 +128,7 @@ rl_cleanup() { rm -rf "$ROOT/rl" "$TFHOME"; }
 
 # overlay：tingly-fuse 的 overlay 后端（mount namespace + overlayfs，所有会话同一路径）。
 ov_prepare() { prepare_base; }
-ov_create() { tf spawn tingly-box --from "$REV" --backend overlay --id "$1" >/dev/null; }
+ov_create() { tf git worktree add tingly-box "$REV" --backend overlay --id "$1" >/dev/null; }
 ov_inws() { tf exec "$1" -- bash -c "$2"; }
 ov_cleanup() { rm -rf "$TFHOME"; }
 

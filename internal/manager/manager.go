@@ -46,14 +46,11 @@ func New(home string) *Manager {
 	return &Manager{Home: home, sessions: session.NewStore(home)}
 }
 
-// AddRepo registers a repository.
-func (m *Manager) AddRepo(ctx context.Context, name, upstream string) (*repo.Repo, error) {
-	return m.AddRepoWith(ctx, name, upstream, repo.AddOptions{})
-}
-
-// AddRepoWith is AddRepo with registration options, such as shared git.
-func (m *Manager) AddRepoWith(ctx context.Context, name, upstream string, opts repo.AddOptions) (*repo.Repo, error) {
-	return repo.Add(ctx, m.Home, name, upstream, opts)
+// AddDir snapshots directory dir as the base new sessions of dir
+// repository name start from, registering name first if needed (ADR 0013).
+// It returns the repository and the new base's id.
+func (m *Manager) AddDir(ctx context.Context, name, dir string, opts repo.DirOptions) (*repo.Repo, string, error) {
+	return repo.AddDir(ctx, m.Home, name, dir, opts)
 }
 
 // RemoveRepo unregisters a repository and deletes its mirror and bases.
@@ -87,14 +84,15 @@ func (m *Manager) RemoveRepo(ctx context.Context, name string, force bool) error
 // Repos lists registered repositories.
 func (m *Manager) Repos() ([]*repo.Repo, error) { return repo.List(m.Home) }
 
+// Repo loads one registered repository.
+func (m *Manager) Repo(name string) (*repo.Repo, error) { return repo.Open(m.Home, name) }
+
+// SpawnOptions say where a session of a dir repository starts and what it
+// shares. Git repositories spawn with Git().Spawn.
 type SpawnOptions struct {
 	Repo    string
-	From    string // revision to start from; default HEAD of the mirror
-	FromDir string // prepared checkout to snapshot as the base (instead of From)
-	Base    string // existing base id to reuse (instead of From or FromDir)
-	NoFetch bool   // resolve From against the mirror as is, fetching only if it is unknown
+	Base    string // base id; the repository's latest snapshot when empty
 	ID      string // optional; random when empty
-	Branch  string // optional; agent/<id> when empty
 	Backend string // optional; backend.Default when empty
 	// Share adds shared paths for this session on top of the repository's
 	// (see SetShares). It shares them with every other session that shares
@@ -102,12 +100,15 @@ type SpawnOptions struct {
 	Share []string
 }
 
-// Spawn creates a session: a private view of the base commit with a new
-// branch checked out.
-func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.Session, err error) {
+// Spawn creates a session of a dir repository: a private view of one of its
+// snapshots.
+func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (*session.Session, error) {
 	r, err := repo.Open(m.Home, opts.Repo)
 	if err != nil {
 		return nil, err
+	}
+	if r.IsGit() {
+		return nil, fmt.Errorf("repo %q is a git repository; spawn it with git worktree add", r.Name)
 	}
 	b, err := backend.Get(orDefault(opts.Backend, backend.Default))
 	if err != nil {
@@ -119,110 +120,71 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 		return nil, err
 	}
 	defer unlock()
-	n := 0
-	for _, set := range []bool{opts.From != "", opts.FromDir != "", opts.Base != ""} {
-		if set {
-			n++
-		}
-	}
-	if n > 1 {
-		return nil, errors.New("--from, --from-dir and --base are mutually exclusive")
-	}
-	var sha, head, source, baseDir string
-	switch {
-	case opts.FromDir != "":
-		if sha, head, err = r.SnapshotDir(ctx, opts.FromDir); err != nil {
-			return nil, err
-		}
-		source, _ = filepath.Abs(opts.FromDir)
-		baseDir = r.BaseDir(sha)
-	case opts.Base != "":
-		sha = opts.Base
-		if strings.ContainsAny(sha, `/\`) || strings.HasPrefix(sha, ".") {
-			return nil, fmt.Errorf("invalid base id %q", sha)
-		}
-		baseDir = r.BaseDir(sha)
-		if _, err := os.Stat(baseDir); err != nil {
-			return nil, fmt.Errorf("repo %q has no base %q (see repo list -v)", r.Name, sha)
-		}
-		if h, herr := r.ReadHead(ctx, sha); herr == nil && h != sha {
-			head = h
-		}
-	default:
-		if sha, err = r.Resolve(ctx, orDefault(opts.From, "HEAD"), !opts.NoFetch); err != nil {
-			return nil, err
-		}
-		if baseDir, err = r.EnsureBase(ctx, sha); err != nil {
-			return nil, err
-		}
-	}
-
-	// Pin before any view uses the base, so a gc in the mirrors can never
-	// take objects out from under it. This also repairs older bases.
-	if err := r.PinBase(ctx, sha); err != nil {
+	// Re-read: a base add may have made another snapshot current, and a
+	// prune removed the one read above, before the lock was ours.
+	if r, err = repo.Open(m.Home, opts.Repo); err != nil {
 		return nil, err
 	}
-
-	shared, err := repo.MergeSharePaths(r.SharedPaths, opts.Share)
+	id := orDefault(opts.Base, r.Current)
+	baseDir, err := existingBase(r, id)
 	if err != nil {
 		return nil, err
 	}
-	id := opts.ID
-	if id == "" {
-		id = session.NewID()
+	return m.newSession(ctx, r, b, baseDir, &session.Session{ID: opts.ID, Base: id, Source: r.Source}, opts.Share, nil)
+}
+
+// existingBase is the directory of r's base id, which must exist.
+func existingBase(r *repo.Repo, id string) (string, error) {
+	if id == "" || strings.ContainsAny(id, `/\`) || strings.HasPrefix(id, ".") {
+		return "", fmt.Errorf("invalid base id %q", id)
 	}
-	if err := m.sessions.Reserve(id); err != nil {
+	dir := r.BaseDir(id)
+	if _, err := os.Stat(dir); err != nil {
+		return "", fmt.Errorf("repo %q has no base %q (see base list %s)", r.Name, id, r.Name)
+	}
+	return dir, nil
+}
+
+// newSession creates sess's view of baseDir with its shared paths, runs
+// setup in it, and saves sess. sess comes with its base filled in, and its
+// id when the caller chose one. On error nothing of the session is left.
+func (m *Manager) newSession(ctx context.Context, r *repo.Repo, b backend.Backend, baseDir string, sess *session.Session, share []string, setup func(ws backend.Workspace, sess *session.Session, shares []repo.Share) error) (_ *session.Session, err error) {
+	shared, err := repo.MergeSharePaths(r.SharedPaths, share)
+	if err != nil {
 		return nil, err
 	}
-	ws := backend.Workspace{ID: id, Repo: r.Name, BaseDir: baseDir, StateDir: m.sessions.Dir(id)}
-	sharedGitDir := ""
+	if sess.ID == "" {
+		sess.ID = session.NewID()
+	}
+	if err := m.sessions.Reserve(sess.ID); err != nil {
+		return nil, err
+	}
+	ws := backend.Workspace{ID: sess.ID, Repo: r.Name, BaseDir: baseDir, StateDir: m.sessions.Dir(sess.ID)}
 	defer func() {
 		if err != nil {
 			_ = b.Remove(context.WithoutCancel(ctx), ws)
-			if sharedGitDir != "" {
-				_ = r.RemoveSessionGitDir(id)
+			if r.SharedGit {
+				_ = r.RemoveSessionGitDir(sess.ID)
 			}
-			_ = m.sessions.Delete(id)
+			_ = m.sessions.Delete(sess.ID)
 		}
 	}()
 
 	// Seeding a share is permanent, so it waits until the id is ours.
-	var shares []repo.Share
-	if shares, err = r.EnsureShares(ctx, baseDir, shared); err != nil {
+	shares, err := r.EnsureShares(ctx, baseDir, shared)
+	if err != nil {
 		return nil, err
 	}
 	ws.Shares = toBackendShares(shares)
 	if ws.ViewPath, err = b.Create(ctx, ws); err != nil {
 		return nil, fmt.Errorf("create view: %w", err)
 	}
-	if r.SharedGit {
-		if sharedGitDir, err = r.AddSessionGitDir(ctx, id, baseDir, ws.ViewPath); err != nil {
-			return nil, fmt.Errorf("shared git: %w", err)
+	sess.Repo, sess.Backend, sess.ViewPath, sess.Shared = r.Name, b.Name(), ws.ViewPath, shared
+	sess.CreatedAt = time.Now().UTC()
+	if setup != nil {
+		if err = setup(ws, sess, shares); err != nil {
+			return nil, err
 		}
-		// Only a process inside the view can change it (overlay), so the
-		// switch from the base's .git to the shared one runs there.
-		link := []string{"sh", "-c", `rm -rf .git && ln -s "$1" .git`, "sh", sharedGitDir}
-		if err = m.run(ctx, b, ws, &session.Session{ID: id, Repo: r.Name}, link, nil, io.Discard, nil); err != nil {
-			return nil, fmt.Errorf("shared git: link .git: %w", err)
-		}
-	}
-	if err = m.excludeShares(ctx, b, ws, id, r.Name, shares); err != nil {
-		return nil, fmt.Errorf("exclude shared paths: %w", err)
-	}
-	sess = &session.Session{
-		ID:        id,
-		Repo:      r.Name,
-		Base:      sha,
-		Head:      head,
-		Source:    source,
-		Branch:    orDefault(opts.Branch, "agent/"+id),
-		Backend:   b.Name(),
-		ViewPath:  ws.ViewPath,
-		Shared:    shared,
-		CreatedAt: time.Now().UTC(),
-	}
-	if err = m.run(ctx, b, ws, sess, []string{"git", "switch", "--quiet", "--create", sess.Branch}, nil, io.Discard, nil); err != nil {
-		return nil, fmt.Errorf("create branch: %w", err)
 	}
 	if err = m.sessions.Save(sess); err != nil {
 		return nil, err
@@ -230,19 +192,11 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (sess *session.S
 	return sess, nil
 }
 
-// FetchRepo updates the repository's mirror from upstream.
-func (m *Manager) FetchRepo(ctx context.Context, name string) error {
-	r, err := repo.Open(m.Home, name)
-	if err != nil {
-		return err
-	}
-	return r.Fetch(ctx)
-}
-
 // BaseInfo describes one base of a repository.
 type BaseInfo struct {
 	ID       string
-	Head     string // commit the base is at
+	Head     string // git: commit the base is at
+	Current  bool   // dir: the base new sessions start from
 	Created  time.Time
 	Sessions []string // ids of the sessions layered on it
 	Pinned   bool     // its objects are protected from gc in the mirrors
@@ -281,7 +235,10 @@ func (m *Manager) bases(ctx context.Context, r *repo.Repo, strict bool) ([]BaseI
 		if fi, err := os.Stat(r.BaseDir(id)); err == nil {
 			b.Created = fi.ModTime()
 		}
-		b.Head, _ = r.ReadHead(ctx, id)
+		if r.IsGit() {
+			b.Head, _ = r.ReadHead(ctx, id)
+		}
+		b.Current = id == r.Current
 		for _, s := range sessions {
 			if s.Repo == r.Name && s.Base == id {
 				b.Sessions = append(b.Sessions, s.ID)
@@ -305,6 +262,10 @@ func (m *Manager) RemoveBase(ctx context.Context, name, id string) error {
 		return err
 	}
 	defer unlock()
+	// Re-read: a base add may have made another snapshot current meanwhile.
+	if r, err = repo.Open(m.Home, name); err != nil {
+		return err
+	}
 	bases, err := m.bases(ctx, r, true)
 	if err != nil {
 		return err
@@ -326,6 +287,8 @@ func (m *Manager) RemoveBase(ctx context.Context, name, id string) error {
 		return fmt.Errorf("base %q is ambiguous in repo %q", id, name)
 	case len(match[0].Sessions) > 0:
 		return fmt.Errorf("base %s is used by sessions %v; drop them first", match[0].ID, match[0].Sessions)
+	case match[0].Current:
+		return fmt.Errorf("base %s is the snapshot new sessions of %s start from; take a new one with base add first", match[0].ID, name)
 	}
 	return r.RemoveBase(ctx, match[0].ID)
 }
@@ -342,6 +305,10 @@ func (m *Manager) PruneBases(ctx context.Context, name string, dryRun bool) ([]s
 		return nil, err
 	}
 	defer unlock()
+	// Re-read: a base add may have made another snapshot current meanwhile.
+	if r, err = repo.Open(m.Home, name); err != nil {
+		return nil, err
+	}
 	if !dryRun {
 		// Finish removals an earlier run was interrupted in.
 		if err := r.SweepRemoved(); err != nil {
@@ -354,7 +321,7 @@ func (m *Manager) PruneBases(ctx context.Context, name string, dryRun bool) ([]s
 	}
 	var pruned []string
 	for _, b := range bases {
-		if len(b.Sessions) > 0 {
+		if len(b.Sessions) > 0 || b.Current {
 			continue
 		}
 		if !dryRun {
@@ -365,48 +332,6 @@ func (m *Manager) PruneBases(ctx context.Context, name string, dryRun bool) ([]s
 		pruned = append(pruned, b.ID)
 	}
 	return pruned, nil
-}
-
-// BaseHealth is the state of one base as CheckRepo sees it.
-type BaseHealth struct {
-	ID       string
-	Sessions int
-	Pinned   bool  // its objects are protected from gc in the mirrors
-	Err      error // fsck failure: objects it needs are missing
-}
-
-// CheckRepo reports, for every base of the repository, whether it is pinned
-// and whether git can still reach every object it needs. With fix set it
-// pins unpinned bases first; it cannot bring back objects already gone.
-func (m *Manager) CheckRepo(ctx context.Context, name string, fix bool) ([]BaseHealth, error) {
-	r, err := repo.Open(m.Home, name)
-	if err != nil {
-		return nil, err
-	}
-	// Keep bases from being removed while they are checked or pinned.
-	unlock, err := r.LockBases(false)
-	if err != nil {
-		return nil, err
-	}
-	defer unlock()
-	bases, err := m.bases(ctx, r, false)
-	if err != nil {
-		return nil, err
-	}
-	var out []BaseHealth
-	for _, b := range bases {
-		h := BaseHealth{ID: b.ID, Sessions: len(b.Sessions), Pinned: b.Pinned}
-		var pinErr error
-		if fix && !b.Pinned {
-			pinErr = r.PinBase(ctx, b.ID)
-			if h.Pinned, err = r.Pinned(ctx, b.ID); err != nil {
-				return nil, err
-			}
-		}
-		h.Err = errors.Join(pinErr, r.Fsck(ctx, b.ID))
-		out = append(out, h)
-	}
-	return out, nil
 }
 
 // Session loads a session by id.
@@ -422,16 +347,6 @@ func (m *Manager) Exec(ctx context.Context, id string, argv []string, stdin io.R
 		return err
 	}
 	return m.run(ctx, b, ws, sess, argv, stdin, stdout, stderr)
-}
-
-// Push pushes the session's branch to remote (default origin, the upstream).
-func (m *Manager) Push(ctx context.Context, id, remote string, stdout, stderr io.Writer) error {
-	sess, b, ws, err := m.load(id)
-	if err != nil {
-		return err
-	}
-	argv := []string{"git", "push", orDefault(remote, "origin"), "HEAD:refs/heads/" + sess.Branch}
-	return m.run(ctx, b, ws, sess, argv, nil, stdout, stderr)
 }
 
 // Drop removes the session's view and metadata. Unpushed work is lost,
@@ -476,27 +391,6 @@ func (m *Manager) load(id string) (*session.Session, backend.Backend, backend.Wo
 	}
 	return sess, b, ws, nil
 }
-
-// excludeShares adds each untracked shared path to the view's
-// info/exclude, so a session never commits shared content. A symlinked
-// share (copy, clone) is a file to git, which a directory-only rule such
-// as "node_modules/" in .gitignore would not match.
-func (m *Manager) excludeShares(ctx context.Context, b backend.Backend, ws backend.Workspace, id, repoName string, shares []repo.Share) error {
-	var patterns []string
-	for _, s := range shares {
-		if !s.Tracked {
-			patterns = append(patterns, "/"+globEscaper.Replace(s.Path))
-		}
-	}
-	if len(patterns) == 0 {
-		return nil
-	}
-	script := `f=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$f")" && for p; do grep -qxF -- "$p" "$f" 2>/dev/null || printf '%s\n' "$p" >> "$f"; done`
-	argv := append([]string{"sh", "-c", script, "sh"}, patterns...)
-	return m.run(ctx, b, ws, &session.Session{ID: id, Repo: repoName}, argv, nil, io.Discard, nil)
-}
-
-var globEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`)
 
 func toBackendShares(shares []repo.Share) []backend.Share {
 	var out []backend.Share

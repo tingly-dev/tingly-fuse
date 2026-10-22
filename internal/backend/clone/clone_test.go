@@ -12,6 +12,7 @@ import (
 
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
 	"github.com/tingly-dev/tingly-fuse/internal/manager"
+	"github.com/tingly-dev/tingly-fuse/internal/repo"
 )
 
 func TestMain(m *testing.M) {
@@ -152,7 +153,7 @@ func TestManagerRoundTrip(t *testing.T) {
 	git(t, tmp, "clone", "--quiet", "--bare", src, upstream)
 
 	m := manager.New(filepath.Join(tmp, "home"))
-	if _, err := m.AddRepo(ctx, "demo", upstream); err != nil {
+	if _, err := m.Git().Clone(ctx, upstream, "demo", repo.AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	run := func(id string, argv ...string) string {
@@ -166,7 +167,7 @@ func TestManagerRoundTrip(t *testing.T) {
 
 	views := map[string]bool{}
 	for _, id := range []string{"a", "b"} {
-		sess, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: id, Backend: "clone"})
+		sess, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: id, Backend: "clone"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,7 +176,7 @@ func TestManagerRoundTrip(t *testing.T) {
 			t.Fatalf("TINGLY_WORKSPACE = %q, want %q", ws, sess.ViewPath)
 		}
 		run(id, "sh", "-c", "echo "+id+" > "+id+".txt && git add . && git commit --quiet -m "+id)
-		if err := m.Push(ctx, id, "", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		if err := m.Exec(ctx, id, []string{"git", "push", "--quiet", "origin", "HEAD"}, nil, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
 	}

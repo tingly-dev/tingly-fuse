@@ -27,9 +27,10 @@ type Workspace struct {
 	ID string
 	// Repo is the registered repository name.
 	Repo string
-	// BaseDir is the read-only materialized checkout of the base commit,
-	// shared by every session spawned from that commit. Its .git uses
-	// alternates pointing outside BaseDir, so object reads never write into it.
+	// BaseDir is the read-only base, shared by every session spawned from
+	// it: a snapshot of a directory, or a checkout of a commit whose .git
+	// uses alternates pointing outside BaseDir, so object reads never write
+	// into it.
 	BaseDir string
 	// StateDir is private to this session; the backend may keep any data
 	// (upper/work dirs, a cloned tree) under it.

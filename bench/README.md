@@ -79,7 +79,7 @@ BENCH_WARM_BASE=1 BENCH_METHODS="copy reflink overlay" bench/bench.sh run
 
 ## base 生命周期（[lifecycle.sh](lifecycle.sh)，[决策 0008](../.design/decisions/0008-pin-base-objects-in-mirrors.md)）
 
-端到端验证 base 在上游改写历史、镜像 gc 之后是否还能用。脚本把仓库 `--mirror` 到本地当 upstream，建三个会话（`--from main`、`--from topic`、`--from-dir` 一个含未推送提交、stash、暂存文件的目录），然后删掉 topic、force-push 改写 main，对所有镜像 `fetch --prune` 加 `gc --prune=now`，最后在每个会话里跑 `git status` 和 `git fsck`（含子模块）。`TF_OLD` 可以指定旧版本，用它建 base、再用当前版本 `repo check --fix`，验证升级路径。
+端到端验证 base 在上游改写历史、镜像 gc 之后是否还能用。脚本把仓库 `--mirror` 到本地当 upstream，建三个会话（`--from main`、`--from topic`、`--from-dir` 一个含未推送提交、stash、暂存文件的目录），然后删掉 topic、force-push 改写 main，对所有镜像 `fetch --prune` 加 `gc --prune=now`，最后在每个会话里跑 `git status` 和 `git fsck`（含子模块）。`TF_OLD` 可以指定旧版本，用它建 base、再用当前版本 `git fsck --fix`（旧版本叫 `repo check --fix`），验证升级路径。
 
 2026-10-18，tingly-box（`5f83f04`，3 个子模块），Linux 云容器：
 

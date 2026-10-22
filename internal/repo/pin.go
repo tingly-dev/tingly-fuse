@@ -80,6 +80,9 @@ func (r *Repo) Pinned(ctx context.Context, id string) (bool, error) {
 
 // PinnedBases returns the ids of all pinned bases, with one git call.
 func (r *Repo) PinnedBases(ctx context.Context) (map[string]bool, error) {
+	if !r.IsGit() {
+		return nil, nil // no mirrors, nothing to pin
+	}
 	out, err := gitx.Run(ctx, r.ObjectsDir(), "for-each-ref", "--format=%(refname)", pinPrefix)
 	if err != nil {
 		return nil, err
@@ -180,6 +183,9 @@ func (r *Repo) RemoveBase(ctx context.Context, id string) error {
 
 // unpin deletes base id's pins in every mirror.
 func (r *Repo) unpin(ctx context.Context, id string) error {
+	if !r.IsGit() {
+		return nil
+	}
 	mirrors, _ := filepath.Glob(filepath.Join(r.ModulesDir(), "*.git"))
 	for _, m := range append([]string{r.ObjectsDir()}, mirrors...) {
 		err := withMirrorLock(m, func() error {
@@ -317,7 +323,7 @@ func pinInto(ctx context.Context, gitdir, mirror, id, label string) error {
 	// Only objects the mirror actually has, with everything they reach, can
 	// be pinned: a ref to an incomplete object makes every later gc in the
 	// mirror fail. Whatever is missing was gone before pinning; fsck in
-	// repo check reports it.
+	// git fsck reports it.
 	type ref struct{ sha, name string }
 	var want []ref
 	for _, line := range strings.Split(refs, "\n") {

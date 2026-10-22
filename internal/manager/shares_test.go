@@ -27,7 +27,7 @@ func testSharedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"a", "b"} {
-		if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: id}); err != nil {
+		if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: id}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -72,7 +72,7 @@ func testSharedPaths(t *testing.T) {
 	if _, err := m.SetShares("demo", []string{"cache"}, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "c"}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "c"}); err != nil {
 		t.Fatal(err)
 	}
 	execIn(t, m, "c", "sh", "-c", "mkdir -p cache && echo c > cache/c")
@@ -95,7 +95,7 @@ func testSharedTrackedPath(t *testing.T) {
 	if _, err := m.SetShares("demo", []string{"README.md"}, false); err != nil {
 		t.Fatal(err)
 	}
-	_, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a"})
+	_, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a"})
 	if backend.Default != "overlay" {
 		if err == nil || !strings.Contains(err.Error(), "tracked by git") {
 			t.Fatalf("spawn sharing a tracked path on %s: %v", backend.Default, err)
@@ -108,7 +108,7 @@ func testSharedTrackedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "b"}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "b"}); err != nil {
 		t.Fatal(err)
 	}
 	execIn(t, m, "a", "sh", "-c", "echo shared > README.md")
@@ -135,11 +135,11 @@ func testSharedFileFromDir(t *testing.T) {
 	if _, err := m.SetShares("demo", []string{"./.env"}, false); err != nil {
 		t.Fatal(err)
 	}
-	s, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", FromDir: dir, ID: "a"})
+	s, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", FromDir: dir, ID: "a"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", Base: s.Base, ID: "b"}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", Base: s.Base, ID: "b"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := execIn(t, m, "b", "cat", ".env"); got != "KEY=1" {
@@ -150,7 +150,7 @@ func testSharedFileFromDir(t *testing.T) {
 		t.Errorf("after a's write, b's .env = %q", got)
 	}
 	// A plain commit base without .env still gets the shared file.
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "c"}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "c"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := execIn(t, m, "c", "cat", ".env"); got != "KEY=2" {
@@ -194,32 +194,32 @@ func TestSpawnShares(t *testing.T) { eachBackend(t, testSpawnShares) }
 func testSpawnShares(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
-	if _, err := m.AddRepoWith(ctx, "multi", upstream, repo.AddOptions{SharedPaths: []string{"cache", "../x"}}); err == nil {
+	if _, err := m.Git().Clone(ctx, upstream, "multi", repo.AddOptions{SharedPaths: []string{"cache", "../x"}}); err == nil {
 		t.Error("add accepted the path ../x")
 	}
-	r, err := m.AddRepoWith(ctx, "multi", upstream, repo.AddOptions{SharedPaths: []string{"out", "cache", "./cache"}})
+	r, err := m.Git().Clone(ctx, upstream, "multi", repo.AddOptions{SharedPaths: []string{"out", "cache", "./cache"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(r.SharedPaths, ","); got != "cache,out" {
 		t.Errorf("shared paths at add = %s", got)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "a", Share: []string{"tmp", "logs"}}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "multi", ID: "a", Share: []string{"tmp", "logs"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "b", Share: []string{"tmp"}}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "multi", ID: "b", Share: []string{"tmp"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "c"}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "multi", ID: "c"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "d", Share: []string{"cache/sub"}}); err == nil || !strings.Contains(err.Error(), "overlap") {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "multi", ID: "d", Share: []string{"cache/sub"}}); err == nil || !strings.Contains(err.Error(), "overlap") {
 		t.Errorf("spawn sharing a path inside a shared one: %v", err)
 	}
 	// Shared copies nest on disk, so a path inside (or around) one that
 	// already has a copy is refused, even when no session shares both.
 	for _, p := range []string{"logs/x", "tmp/y/z"} {
-		if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "multi", ID: "e", Share: []string{p}}); err == nil || !strings.Contains(err.Error(), "already has a shared copy") {
+		if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "multi", ID: "e", Share: []string{p}}); err == nil || !strings.Contains(err.Error(), "already has a shared copy") {
 			t.Errorf("spawn sharing %s inside an existing copy: %v", p, err)
 		}
 	}
@@ -246,13 +246,13 @@ func testShareKindMismatch(t *testing.T) {
 	if _, err := m.SetShares("demo", []string{".env"}, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a"}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a"}); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "prepared")
 	git(t, filepath.Dir(dir), "clone", "--quiet", upstream, dir)
 	os.WriteFile(filepath.Join(dir, ".env"), []byte("KEY=1\n"), 0o644)
-	_, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", FromDir: dir, ID: "b"})
+	_, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", FromDir: dir, ID: "b"})
 	if err == nil || !strings.Contains(err.Error(), "disagree on whether it is a directory") {
 		t.Fatalf("spawn with a file where the share is a directory: %v", err)
 	}

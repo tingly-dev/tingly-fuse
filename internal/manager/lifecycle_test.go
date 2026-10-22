@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/tingly-dev/tingly-fuse/internal/manager"
+	"github.com/tingly-dev/tingly-fuse/internal/repo"
 )
 
 // commitTo makes a commit on branch in upstream through a throwaway clone
@@ -77,10 +78,10 @@ func testBaseSurvivesUpstreamRewriteAndGC(t *testing.T) {
 	ctx := context.Background()
 	topic := commitTo(t, upstream, "topic", "topic.txt", "topic\n", false)
 
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "main", From: "main"}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "main", Commit: "main"}); err != nil {
 		t.Fatal(err)
 	}
-	tp, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "topic", From: "topic"})
+	tp, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "topic", Commit: "topic"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +108,7 @@ func testBaseSurvivesUpstreamRewriteAndGC(t *testing.T) {
 		t.Errorf("topic.txt = %q", got)
 	}
 	// The old base still serves new sessions.
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "again", Base: tp.Base}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "again", Base: tp.Base}); err != nil {
 		t.Fatal(err)
 	}
 	fsckView(t, m, "again")
@@ -135,7 +136,7 @@ func testFromDirObjectsSurviveGC(t *testing.T) {
 	os.WriteFile(filepath.Join(prep, "staged.txt"), []byte("staged\n"), 0o644)
 	git(t, prep, "add", "staged.txt")
 
-	sess, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a", FromDir: prep})
+	sess, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a", FromDir: prep})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func testFromDirObjectsSurviveGC(t *testing.T) {
 	if got := execIn(t, m, "a", "git", "log", "-1", "--format=%s", "local-only"); got != "unpushed, amended" {
 		t.Errorf("local-only = %q", got)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "b", Base: sess.Base}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "b", Base: sess.Base}); err != nil {
 		t.Fatal(err)
 	}
 	fsckView(t, m, "b")
@@ -194,14 +195,14 @@ func testSubmoduleObjectsSurviveUpstreamRewriteAndGC(t *testing.T) {
 
 	m := manager.New(filepath.Join(tmp, "home"))
 	dropAll(t, m)
-	if _, err := m.AddRepo(ctx, "demo", upstream); err != nil {
+	if _, err := m.Git().Clone(ctx, upstream, "demo", repo.AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "s"}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	// The prepared-directory path seeds module mirrors differently; cover it too.
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "d", FromDir: src}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "d", FromDir: src}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -221,13 +222,13 @@ func TestSpawnFollowsUpstream(t *testing.T) { eachBackend(t, testSpawnFollowsUps
 func testSpawnFollowsUpstream(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
-	old, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "old"})
+	old, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "old"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	next := commitTo(t, upstream, "main", "next.txt", "next\n", false)
 
-	stale, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "stale", From: "main", NoFetch: true})
+	stale, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "stale", Commit: "main", NoFetch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +236,7 @@ func testSpawnFollowsUpstream(t *testing.T) {
 		t.Errorf("--no-fetch base = %s, want the mirror's %s", stale.Base, old.Base)
 	}
 	for _, from := range []string{"", "main"} {
-		s, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", From: from})
+		s, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", Commit: from})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -247,10 +248,10 @@ func testSpawnFollowsUpstream(t *testing.T) {
 	if err := os.Rename(upstream, upstream+".away"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", From: old.Base}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", Commit: old.Base}); err != nil {
 		t.Errorf("spawn by sha with upstream gone: %v", err)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", From: "main"}); err == nil || !strings.Contains(err.Error(), "--no-fetch") {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", Commit: "main"}); err == nil || !strings.Contains(err.Error(), "--no-fetch") {
 		t.Errorf("spawn --from main with upstream gone: err = %v, want a hint at --no-fetch", err)
 	}
 	// The old session still sees its own base.
@@ -266,11 +267,11 @@ func TestCheckRepoFindsAndRepairsUnpinnedBases(t *testing.T) {
 func testCheckRepoFindsAndRepairsUnpinnedBases(t *testing.T) {
 	m, _ := setup(t)
 	ctx := context.Background()
-	s, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a"})
+	s, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	health, err := m.CheckRepo(ctx, "demo", false)
+	health, err := m.Git().Fsck(ctx, "demo", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,10 +284,10 @@ func testCheckRepoFindsAndRepairsUnpinnedBases(t *testing.T) {
 	for _, ref := range strings.Fields(git(t, mirror, "for-each-ref", "--format=%(refname)", "refs/tingly/")) {
 		git(t, mirror, "update-ref", "-d", ref)
 	}
-	if health, _ = m.CheckRepo(ctx, "demo", false); health[0].Pinned {
+	if health, _ = m.Git().Fsck(ctx, "demo", false); health[0].Pinned {
 		t.Fatal("unpinned base reported as pinned")
 	}
-	if health, _ = m.CheckRepo(ctx, "demo", true); !health[0].Pinned || health[0].Err != nil {
+	if health, _ = m.Git().Fsck(ctx, "demo", true); !health[0].Pinned || health[0].Err != nil {
 		t.Fatalf("after --fix: %+v", health[0])
 	}
 
@@ -294,10 +295,10 @@ func testCheckRepoFindsAndRepairsUnpinnedBases(t *testing.T) {
 	for _, ref := range strings.Fields(git(t, mirror, "for-each-ref", "--format=%(refname)", "refs/tingly/")) {
 		git(t, mirror, "update-ref", "-d", ref)
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "b", Base: s.Base}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "b", Base: s.Base}); err != nil {
 		t.Fatal(err)
 	}
-	if health, _ = m.CheckRepo(ctx, "demo", false); !health[0].Pinned {
+	if health, _ = m.Git().Fsck(ctx, "demo", false); !health[0].Pinned {
 		t.Fatal("spawn --base did not pin")
 	}
 
@@ -307,7 +308,7 @@ func testCheckRepoFindsAndRepairsUnpinnedBases(t *testing.T) {
 		git(t, mirror, "update-ref", "-d", ref)
 	}
 	git(t, mirror, "-c", "gc.pruneExpire=now", "gc", "--quiet", "--prune=now")
-	if health, _ = m.CheckRepo(ctx, "demo", false); health[0].Err == nil {
+	if health, _ = m.Git().Fsck(ctx, "demo", false); health[0].Err == nil {
 		t.Error("missing objects not reported")
 	}
 }
@@ -317,12 +318,12 @@ func TestRemoveAndPruneBases(t *testing.T) { eachBackend(t, testRemoveAndPruneBa
 func testRemoveAndPruneBases(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
-	main, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "main"})
+	main, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "main"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	commitTo(t, upstream, "topic", "topic.txt", "topic\n", false)
-	topic, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "topic", From: "topic"})
+	topic, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "topic", Commit: "topic"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +334,7 @@ func testRemoveAndPruneBases(t *testing.T) {
 	git(t, prep, "add", ".")
 	git(t, prep, "commit", "--quiet", "-m", "only here")
 	onlyHere := git(t, prep, "rev-parse", "HEAD")
-	dir, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "dir", FromDir: prep})
+	dir, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "dir", FromDir: prep})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +399,7 @@ func TestPruneDoesNotRaceSpawn(t *testing.T) { eachBackend(t, testPruneDoesNotRa
 func testPruneDoesNotRaceSpawn(t *testing.T) {
 	m, _ := setup(t)
 	ctx := context.Background()
-	seed, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "seed"})
+	seed, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "seed"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +413,7 @@ func testPruneDoesNotRaceSpawn(t *testing.T) {
 			defer wg.Done()
 			// Either finds the base (and keeps it) or finds it pruned and
 			// rebuilds it from the commit.
-			m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", From: seed.Base})
+			m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", Commit: seed.Base})
 		}()
 		go func() {
 			defer wg.Done()
@@ -444,7 +445,7 @@ func testPinningSkipsMissingObjects(t *testing.T) {
 	os.WriteFile(filepath.Join(prep, "staged.txt"), []byte("lost\n"), 0o644)
 	git(t, prep, "add", "staged.txt")
 	blob := git(t, prep, "rev-parse", ":staged.txt")
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a", FromDir: prep}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a", FromDir: prep}); err != nil {
 		t.Fatal(err)
 	}
 	mirror := mirrors(t, m, "demo")[0]
@@ -455,7 +456,7 @@ func testPinningSkipsMissingObjects(t *testing.T) {
 	if err := os.Remove(filepath.Join(mirror, "objects", blob[:2], blob[2:])); err != nil {
 		t.Fatal(err)
 	}
-	health, err := m.CheckRepo(ctx, "demo", true)
+	health, err := m.Git().Fsck(ctx, "demo", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +479,7 @@ func testConcurrentSpawnsFetchSafely(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = m.Spawn(ctx, manager.SpawnOptions{Repo: "demo"})
+			_, errs[i] = m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo"})
 		}()
 	}
 	wg.Wait()
@@ -504,7 +505,7 @@ func TestPruneRefusesWithUnreadableSession(t *testing.T) {
 func testPruneRefusesWithUnreadableSession(t *testing.T) {
 	m, _ := setup(t)
 	ctx := context.Background()
-	s, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "demo", ID: "a"})
+	s, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a"})
 	if err != nil {
 		t.Fatal(err)
 	}

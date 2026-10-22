@@ -6,6 +6,8 @@
 
 每个 agent 拿到仓库的一个**私有的、写时复制的视图**：从你指定的 commit 出发，只往自己的分支上提交，最后把分支推到远端。合并和评审在远端以普通 PR 的方式进行。
 
+视图也能用在任意目录上，不管有没有 Git：`base add` 把目录快照下来，`spawn` 给每个 agent 一份。镜像、commit、分支、推送、共享 `.git` 这些 Git 功能都在 `tingly-fuse git` 下面（[ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)）。
+
 ## 为什么
 
 多个 agent 共用一个 checkout 时，会互相覆盖文件、index 和 `HEAD`。常见的解决办法都有代价：
@@ -39,12 +41,14 @@ tingly-fuse 把能共享的和必须私有的分开：
           └────────── git push 到 upstream ───┘  →  在远端通过 PR 合并
 ```
 
-1. `repo add` 登记一个 upstream，并镜像一次。
-2. `spawn` 确保所选 commit 的只读基础 checkout 存在，在其上建出会话视图和分支 `agent/<id>`。
+1. `git clone` 登记一个 upstream，并镜像一次。
+2. `git worktree add` 确保所选 commit 的只读基础 checkout 存在，在其上建出会话视图和分支 `agent/<id>`。
 3. `exec` 在这个视图里运行命令（你的 agent、shell、构建）。
-4. `push` 把会话分支推到真实的 upstream；`drop` 丢弃会话。
+4. 视图里的 `origin` 就是真实的 upstream，`git push origin HEAD` 就把会话分支推上去；`drop` 丢弃会话。
 
-tingly-fuse 不负责准备环境（装依赖、构建）。先在普通 checkout 里准备好，再用 `spawn --from-dir` 交给它（见下文）。
+普通目录跳过 Git 这几步：`base add` 把它快照成 base，`spawn` 在这份快照上建视图。
+
+tingly-fuse 不负责准备环境（装依赖、构建）。先在普通 checkout 里准备好，再用 `git worktree add --from-dir` 交给它（见下文）。
 
 ## 环境要求
 
@@ -75,16 +79,16 @@ sudo mkdir -p /workspace && sudo chown "$USER" /workspace
 
 ```sh
 # 1. 登记仓库（镜像一次）
-tingly-fuse repo add tingly-box https://github.com/tingly-dev/tingly-box
+tingly-fuse git clone https://github.com/tingly-dev/tingly-box
 
 # 2. 从某个 commit 开一个会话。stdout 打印会话 id，视图路径和分支打印在 stderr
-id=$(tingly-fuse spawn tingly-box --from main)
+id=$(tingly-fuse git worktree add tingly-box main)
 
 # 3. 在会话视图里运行 agent
 tingly-fuse exec "$id" -- claude
 
 # 4. 把会话分支（agent/<id>）推到 upstream，然后在远端开 PR
-tingly-fuse push "$id"
+tingly-fuse exec "$id" -- git push origin HEAD
 
 # 5. 用完删除会话。未推送的工作会丢失
 tingly-fuse drop "$id"
@@ -94,7 +98,7 @@ tingly-fuse drop "$id"
 
 ```sh
 for task in fix-login add-tests update-docs; do
-  id=$(tingly-fuse spawn tingly-box --from main --branch "agent/$task")
+  id=$(tingly-fuse git worktree add tingly-box main -b "agent/$task")
   tingly-fuse exec "$id" -- claude -p "$(cat tasks/$task.md)" &
 done
 wait
@@ -108,9 +112,9 @@ tingly-fuse list
 ```sh
 cd ~/src/tingly-box && pnpm install && go build ./...    # 你自己的准备步骤，在 tingly-fuse 之外
 
-id=$(tingly-fuse spawn tingly-box --from-dir ~/src/tingly-box)
+id=$(tingly-fuse git worktree add tingly-box --from-dir ~/src/tingly-box)
 tingly-fuse list                                         # BASE 列显示新 base 的 id：dir-…
-tingly-fuse spawn tingly-box --base dir-…                # 之后的会话复用这份快照，不再复制
+tingly-fuse git worktree add tingly-box --base dir-…     # 之后的会话复用这份快照，不再复制
 ```
 
 - 快照用 reflink 复制，包括 `node_modules` 等被忽略的文件。之后源目录怎么改都不影响已有会话。
@@ -118,53 +122,85 @@ tingly-fuse spawn tingly-box --base dir-…                # 之后的会话复�
 - 目录的 `.git` 必须是目录，不支持 worktree。
 - **Linux 上的 pnpm**：在 overlay 视图里 pnpm 会发现设备号不同，改用项目内 store 并整份重装（tingly-box 上约 690 MB）。在会话里把 `npm_config_store_dir` 设成准备环境时用的 store，`pnpm install` 就只要约 1.2 秒、约 12 MB。细节见 [决策 0007](.design/decisions/0007-from-dir-snapshot-and-absorb-objects.md)。
 
+### 任意目录
+
+不用 Git 时，目录按原样快照下来，每个会话拿到这份快照的私有视图：
+
+```sh
+tingly-fuse base add data ~/datasets/eval --share cache  # 打印快照 id：snap-…
+id=$(tingly-fuse spawn data)
+tingly-fuse exec "$id" -- ./run.sh                       # 写入只留在会话里，cache/ 下除外
+tingly-fuse base add data ~/datasets/eval                # 再拍一个快照，之后新开的会话用它
+```
+
+目录里的内容不做任何解释：里面的 `.git` 和普通文件一样被复制，每个会话一份；共享路径也不会写进 Git 的 exclude。
+
 ## 命令
+
+任意目录：
 
 | 命令 | 做什么 |
 |---|---|
-| `repo add <name> <upstream> [--shared-git] [--share path]...` | 登记仓库并建共享镜像；`--share` 同时设置共享路径（可重复，也可逗号分隔，与 `repo share` 相同）；`--shared-git` 让所有会话成为同一个共享仓库的 worktree，分支和提交彼此立即可见（[ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)） |
-| `repo list [-v]` | 列出仓库；`-v` 加上会话数和 base 数 |
-| `repo fetch <name>` | 从 upstream 更新镜像 |
-| `repo check <name> [--fix]` | 检查每个 base 是否已固定（不会被 gc 清掉）、对象是否齐全；`--fix` 为旧 base 补上固定 |
-| `repo share <name> [path...]` / `repo unshare <name> <path>...` | 让所有新会话共享指定的目录或文件，例如缓存或 `.env`：宿主上一份，overlay 下 bind mount，copy 和 clone 下用符号链接；不带路径时列出（[ADR 0011](.design/decisions/0011-shared-paths.md)） |
-| `base list <repo>` | 列出 base：所在 commit、创建时间、是否已固定、哪些会话在用 |
-| `base rm <repo> <id>` | 删除没有会话在用的 base（`id` 可以是唯一前缀）；之后 git gc 会回收只有它需要的对象 |
-| `base prune <repo> [--dry-run]` | 删除所有没有会话在用的 base，比如旧的 `--from-dir` 快照 |
-| `repo remove <name> [--force]` | 删除镜像和所有 base；`--force` 先 drop 该仓库的会话 |
-| `spawn <repo> [flags]` | 新建会话并打印 id |
+| `base add <name> <dir> [--share path]...` | 把 `dir` 快照成 `name` 新会话的起点；第一次运行时登记 `name`（`--share` 只能在这时给）。打印快照 id |
+| `spawn <name> [--base id] [--id id] [--backend name] [--share path]...` | 从最新快照（或 `--base` 指定的 base）新建会话并打印 id |
+
+Git 仓库。每个子命令都以对应的 git 命令命名，参数顺序也一样，会话就是一个 worktree。只有这三个是在会话里跑 git 替代不了的；推送、拉取等直接在会话里跑 git（`exec <id> -- git push origin HEAD`），列出和删除会话用 `list`、`drop`（[ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)）：
+
+| 命令 | 对应 | 做什么 |
+|---|---|---|
+| `git clone <upstream> [<name>] [--shared-git] [--share path]...` | `git clone` | 登记仓库并建共享镜像；不给名字时取 `upstream` 的最后一段，和 `git clone` 给目录起名一样；`--share` 同时设置共享路径（可重复，也可逗号分隔，与 `share` 相同）；`--shared-git` 让所有会话成为同一个共享仓库的 worktree，分支和提交彼此立即可见（[ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)） |
+| `git worktree add <name> [<commit-ish>] [flags]` | `git worktree add` | 新建会话（带自己的分支）并打印 id |
+| `git fsck <name> [--fix]` | `git fsck` | 检查每个 base 是否已固定（不会被 gc 清掉）、对象是否齐全；`--fix` 为旧 base 补上固定 |
+
+两种都适用：
+
+| 命令 | 做什么 |
+|---|---|
 | `exec <session> -- <cmd> [args...]` | 在会话视图里运行命令 |
-| `push <session> [--remote r]` | 推送会话分支（默认 remote 是 `origin`，即真实 upstream） |
 | `drop <session>` | 删除会话和它的视图 |
 | `list` | 列出会话：仓库、分支、base、后端、视图路径 |
+| `share <name> [path...]` / `unshare <name> <path>...` | 让所有新会话共享指定的目录或文件，例如缓存或 `.env`：宿主上一份，overlay 下 bind mount，copy 和 clone 下用符号链接；不带路径时列出（[ADR 0011](.design/decisions/0011-shared-paths.md)） |
+| `base list [name]` | 不带名字时列出所有仓库：类型、会话数、base 数、来源。带名字时列出它的 base：创建时间、哪些会话在用，以及所在 commit 和是否已固定（Git）或哪个是当前快照（目录） |
+| `base rm <name> <id>` | 删除没有会话在用的 base（`id` 可以是唯一前缀）；之后 git gc 会回收只有它需要的对象。目录的当前快照不会被删 |
+| `base prune <name> [--dry-run]` | 删除所有没有会话在用的 base，比如旧的快照 |
+| `remove <name> [--force]` | 删除仓库和它所有的 base（以及镜像）；`--force` 先 drop 它的会话 |
 
-`spawn` 的参数：
+拆分之前的命令（`repo add`、`spawn`、`push`、`repo check`、`repo share` 等），以及 `git push`、`git fetch`、`git worktree list/remove`，现在会报错，并给出新的写法。
+
+`git worktree add` 的参数（和 git 一样，选项可以放在位置参数前面或后面）：
 
 | 参数 | 含义 |
 |---|---|
-| `--from <rev>` | 起始 revision（默认 upstream 的 `HEAD`）。除完整 commit id 外都会先 fetch，所以 `main` 指的是 upstream 现在的 main |
-| `--no-fetch` | 直接用镜像里现有的内容解析 `--from`（离线，或想继续用已有的 commit） |
-| `--from-dir <dir>` | 把准备好的 checkout 快照成 base |
-| `--base <id>` | 复用已有 base（id 即 `spawn` 打印的 `base:`，或 `list` 的 BASE 列） |
-| `--branch <name>` | 要创建的分支（默认 `agent/<id>`） |
+| `<commit-ish>` | 从哪里开始（默认 upstream 的 `HEAD`）。除完整 commit id 外都会先 fetch，所以 `main` 指的是 upstream 现在的 main |
+| `-b <branch>` | 要创建的分支（默认 `agent/<id>`） |
+| `--no-fetch` | 直接用镜像里现有的内容解析 commit-ish（离线，或想继续用已有的 commit） |
+| `--from-dir <dir>` | 把准备好的 checkout 快照成 base，代替 commit |
+| `--base <id>` | 复用已有 base（id 即 `git worktree add` 打印的 `base:`，或 `list` 的 BASE 列） |
 | `--id <id>` | 会话 id（默认随机） |
 | `--backend <name>` | `overlay`、`clone` 或 `copy`（默认值取决于平台） |
 | `--share <path>` | 在仓库的共享路径之外，再和其他带同一路径 spawn 的会话共享这个路径（可重复，也可逗号分隔） |
 
-`spawn` 中途失败会清理掉已创建的一切。
+`spawn` 也接受 `--base`、`--id`、`--backend`、`--share`，含义相同。两者中途失败都会清理掉已创建的一切。
 
 ## Go API
 
-命令能做的一切都可以在 Go 里通过模块根目录的包调用；命令本身只用这个包（[ADR 0012](.design/decisions/0012-public-go-api.md)）。
+命令能做的一切都可以在 Go 里通过模块根目录的包调用；命令本身只用这个包（[ADR 0012](.design/decisions/0012-public-go-api.md)）。它也分同样的两层（[ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)）：
 
 ```go
 import tinglyfuse "github.com/tingly-dev/tingly-fuse"
 
 m, _ := tinglyfuse.Open("") // TINGLY_FUSE_HOME，或 ~/.tingly-fuse
-m.AddRepoWith(ctx, "box", "https://github.com/tingly-dev/tingly-box",
+
+// 任意目录
+m.AddDir(ctx, "data", "/srv/data", tinglyfuse.DirOptions{SharedPaths: []string{"cache"}})
+s, _ := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "data"})
+
+// Git 仓库：m.Git()
+m.Git().Clone(ctx, "https://github.com/tingly-dev/tingly-box", "box",
 	tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{".cache"}})
-s, _ := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "box", Share: []string{"tmp"}})
+s, _ = m.Git().AddWorktree(ctx, tinglyfuse.WorktreeOptions{Repo: "box", Commit: "main", Share: []string{"tmp"}})
 m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
-m.Push(ctx, s.ID, "", os.Stdout, os.Stderr)
+m.Exec(ctx, s.ID, []string{"git", "push", "origin", "HEAD"}, nil, os.Stdout, os.Stderr)
 m.Drop(ctx, s.ID)
 ```
 
@@ -206,10 +242,11 @@ m.Drop(ctx, s.ID)
 ```
 ~/.tingly-fuse/
 ├── repos/<name>/
-│   ├── repo.json              登记信息（upstream）
-│   ├── objects.git            bare 镜像，对象只存在这里
-│   ├── modules/<hash>.git     子模块镜像，跨 base 共用
-│   └── bases/<commit>/        只读基础 checkout（--from-dir 快照为 dir-…）
+│   ├── repo.json              登记信息（类型；upstream，或源目录和当前快照）
+│   ├── bases/<id>/            只读 base：目录为 snap-…；Git 为某个 commit，--from-dir 快照为 dir-…
+│   ├── shares/<path>          每个共享路径在宿主上的唯一一份
+│   ├── objects.git            仅 Git：bare 镜像，对象只存在这里
+│   └── modules/<hash>.git     仅 Git：子模块镜像，跨 base 共用
 └── sessions/<id>/
     ├── session.json           仓库、base、分支、后端、视图路径
     └── ...                    后端状态（overlay 的 upper/work、holder.json）

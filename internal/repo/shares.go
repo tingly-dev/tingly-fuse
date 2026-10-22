@@ -42,7 +42,7 @@ func cleanSharePath(p string) (string, error) {
 	case p == "" || c == "." || path.IsAbs(c) || c == ".." || strings.HasPrefix(c, "../"):
 		return "", fmt.Errorf("shared path %q must be relative and inside the tree", p)
 	case c == ".git" || strings.HasPrefix(c, ".git/"):
-		return "", fmt.Errorf("cannot share %q: sessions need their own HEAD and index; register the repository with repo add --shared-git to share branches and commits", p)
+		return "", fmt.Errorf("cannot share %q: sessions need their own HEAD and index; register a git repository with git clone --shared-git to share branches and commits", p)
 	}
 	return c, nil
 }
@@ -173,12 +173,17 @@ func (r *Repo) EnsureShares(ctx context.Context, baseDir string, paths []string)
 			}
 		}
 	}
-	// Literal pathspecs: a shared path is a name, not a pattern.
-	files, err := gitx.Run(ctx, baseDir, "--literal-pathspecs", "ls-files", "-z", "--")
-	if err != nil {
-		return nil, err
+	// A dir repository's base is not interpreted, so nothing in it counts
+	// as tracked, even when it happens to hold a .git.
+	var tracked []string
+	if r.IsGit() {
+		// Literal pathspecs: a shared path is a name, not a pattern.
+		files, err := gitx.Run(ctx, baseDir, "--literal-pathspecs", "ls-files", "-z", "--")
+		if err != nil {
+			return nil, err
+		}
+		tracked = strings.Split(files, "\x00")
 	}
-	tracked := strings.Split(files, "\x00")
 	var out []Share
 	for _, p := range paths {
 		s := Share{Path: p, Source: r.ShareSource(p)}
