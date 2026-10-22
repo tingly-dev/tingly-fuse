@@ -86,7 +86,6 @@ func TestCommands(t *testing.T) {
 	tmp := t.TempDir()
 	c := cli{t: t, env: []string{
 		"TINGLY_FUSE_HOME=" + filepath.Join(tmp, "home"),
-		"TINGLY_FUSE_VIEW_ROOT=" + filepath.Join(tmp, "workspace"),
 		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
 		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
 	}}

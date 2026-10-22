@@ -21,13 +21,6 @@ import (
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
 )
 
-// EnvViewRoot overrides the directory views are mounted under. Views are
-// mounted at <root>/<repo>.
-const EnvViewRoot = "TINGLY_FUSE_VIEW_ROOT"
-
-// DefaultViewRoot is used when EnvViewRoot is unset.
-const DefaultViewRoot = "/workspace"
-
 // holderArg0 marks a re-executed child that must mount the overlay in its
 // fresh mount namespace and then stay alive to keep that namespace.
 const holderArg0 = "tingly-fuse-overlay-holder"
@@ -60,6 +53,7 @@ type Backend struct{}
 
 func (Backend) Name() string { return "overlay" }
 
+func viewDir(ws backend.Workspace) string    { return filepath.Join(ws.StateDir, "root") }
 func upperDir(ws backend.Workspace) string   { return filepath.Join(ws.StateDir, "upper") }
 func workDir(ws backend.Workspace) string    { return filepath.Join(ws.StateDir, "work") }
 func holderFile(ws backend.Workspace) string { return filepath.Join(ws.StateDir, "holder.json") }
@@ -69,25 +63,13 @@ func lockFile(ws backend.Workspace) string   { return filepath.Join(ws.StateDir,
 func unprivileged() bool { return os.Geteuid() != 0 }
 
 func (Backend) Create(ctx context.Context, ws backend.Workspace) (string, error) {
-	root := os.Getenv(EnvViewRoot)
-	if root == "" {
-		root = DefaultViewRoot
-	}
-	root, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	view := filepath.Join(root, ws.Repo)
-	for _, d := range []string{upperDir(ws), workDir(ws)} {
+	// The view is a different path per session, like the other backends
+	// (ADR 0014). The mount point stays an empty directory on the host.
+	view := viewDir(ws)
+	for _, d := range []string{upperDir(ws), workDir(ws), view} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return "", err
 		}
-	}
-	// The mount point must exist on the host; it stays an empty directory
-	// shared by every session of the repo. An unprivileged user cannot
-	// create it from inside the namespace either, so fail early with a hint.
-	if err := os.MkdirAll(view, 0o755); err != nil {
-		return "", fmt.Errorf("create mount point: %w (create %s yourself or set %s)", err, root, EnvViewRoot)
 	}
 	return view, nil
 }
@@ -143,7 +125,7 @@ func (Backend) Remove(ctx context.Context, ws backend.Workspace) error {
 		})
 		errs = append(errs, os.RemoveAll(d))
 	}
-	errs = append(errs, os.Remove(holderFile(ws)), os.Remove(lockFile(ws)))
+	errs = append(errs, os.Remove(viewDir(ws)), os.Remove(holderFile(ws)), os.Remove(lockFile(ws)))
 	return ignoreNotExist(errors.Join(errs...))
 }
 

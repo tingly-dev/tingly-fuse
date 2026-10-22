@@ -20,8 +20,7 @@ set -euo pipefail
 url=${1:-https://github.com/tingly-dev/tingly-box}
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/tf-lifecycle.XXXXXX")
-export TINGLY_FUSE_HOME=$work/home TINGLY_FUSE_VIEW_ROOT=$work/views
-mkdir -p "$TINGLY_FUSE_VIEW_ROOT"
+export TINGLY_FUSE_HOME=$work/home
 export GIT_AUTHOR_NAME=bench GIT_AUTHOR_EMAIL=bench@localhost GIT_COMMITTER_NAME=bench GIT_COMMITTER_EMAIL=bench@localhost
 
 TF_NEW=${TF_NEW:-$work/tf}

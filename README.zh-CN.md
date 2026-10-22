@@ -21,9 +21,9 @@ tingly-fuse 把能共享的和必须私有的分开：
 |---|---|
 | git 对象（每个仓库一个 bare 镜像） | 工作区改动 |
 | 基础 checkout 中未改动的文件 | index、`HEAD`、分支 |
-| 构建缓存（路径相同时） | agent 写入的一切 |
+| 不按路径区分的构建缓存 | agent 写入的一切 |
 
-在 Linux 上，所有会话都在**同一个路径**（默认 `/workspace/<repo>`）下看到仓库，各自通过自己的 mount namespace。按路径命中的缓存一直有效，从第二个会话起，tingly-box 的 `go build` 从约 150 秒降到约 15 秒。新建一个会话约 30 毫秒、约 100 KB 磁盘。详见[基准测试](bench/README.md)。
+所有平台上每个会话都有自己的路径：`~/.tingly-fuse/sessions/<id>/root`。按绝对路径命中的构建缓存要用工具自己的选项绕开：共用 `GOCACHE` 并加 `go build -trimpath` 时，第二个会话构建 tingly-box 约 10 秒，不加约 90 秒。在 Linux 上新建一个会话约 30 毫秒、约 100 KB 磁盘。详见[基准测试](bench/README.md)和 [ADR 0014](.design/decisions/0014-per-session-view-path.md)。
 
 ## 工作原理
 
@@ -35,7 +35,7 @@ tingly-fuse 把能共享的和必须私有的分开：
           ┌─────────────────┼─────────────────┐
           ▼                 ▼                 ▼
        会话 A            会话 B            会话 C          写时复制的视图
-  /workspace/<repo>  /workspace/<repo>  /workspace/<repo>  （Linux 上路径相同）
+ sessions/A/root    sessions/B/root    sessions/C/root    （每个会话一个路径）
    分支 agent/A       分支 agent/B       分支 agent/C
           │                 │                 │
           └────────── git push 到 upstream ───┘  →  在远端通过 PR 合并
@@ -53,7 +53,7 @@ tingly-fuse 不负责准备环境（装依赖、构建）。先在普通 checkou
 ## 环境要求
 
 - 构建需要 Go 1.24+，`PATH` 里要有 `git`。
-- **Linux**（默认 `overlay` 后端）：overlayfs 和 `nsenter`（util-linux）。非 root 用户还需要 Linux 5.11+、允许非特权 user namespace，以及可写的视图根目录（见 [Linux 准备](#linux-准备)）。
+- **Linux**（默认 `overlay` 后端）：overlayfs 和 `nsenter`（util-linux）。非 root 用户还需要 Linux 5.11+、允许非特权 user namespace。
 - **macOS**（默认 `clone` 后端）：APFS 卷才能写时复制，其他卷自动退回整份复制。
 - 其他平台或作为兜底，用 `--backend copy`。
 
@@ -64,16 +64,6 @@ go install github.com/tingly-dev/tingly-fuse/cmd/tingly-fuse@latest
 # 或者在本仓库的 clone 里
 go build -o tingly-fuse ./cmd/tingly-fuse
 ```
-
-### Linux 准备
-
-非 root 用户先建一次视图根目录：
-
-```sh
-sudo mkdir -p /workspace && sudo chown "$USER" /workspace
-```
-
-或者用 `TINGLY_FUSE_VIEW_ROOT=/path/to/views` 指向一个你已有权限的目录。
 
 ## 快速上手
 
@@ -223,7 +213,6 @@ m.Drop(ctx, s.ID)
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `TINGLY_FUSE_HOME` | `~/.tingly-fuse` | 状态目录 |
-| `TINGLY_FUSE_VIEW_ROOT` | `/workspace` | Linux overlay 的视图根目录；在 `spawn` 时读取并记入会话 |
 
 ## 后端
 
@@ -231,7 +220,7 @@ m.Drop(ctx, s.ID)
 
 | 后端 | 平台 | 视图路径 | 机制 |
 |---|---|---|---|
-| `overlay` | Linux（默认） | 所有会话相同，`/workspace/<repo>` | 每会话一个常驻 mount namespace，里面挂 overlayfs（lower = base，upper = 会话）。宿主和其他会话都看不到 |
+| `overlay` | Linux（默认） | 每会话不同 | 每会话一个常驻 mount namespace，里面挂 overlayfs（lower = base，upper = 会话）。宿主和其他会话都看不到，宿主上视图路径是空的挂载点 |
 | `clone` | macOS（默认） | 每会话不同 | APFS `clonefile` 写时复制；非 APFS 卷整份复制 |
 | `copy` | 全平台 | 每会话不同 | 整份复制 base，作为基准实现和兜底 |
 
@@ -254,7 +243,8 @@ m.Drop(ctx, s.ID)
 
 ## 已知限制
 
-- macOS 没有 mount namespace，会话路径各不相同。缓解办法是脚本读 `TINGLY_WORKSPACE`、Go 构建加 `-trimpath`。用轻量 Linux 虚拟机实现同一路径只是设想，尚未实现。
+- 每个会话路径不同。脚本应读 `TINGLY_WORKSPACE`；按路径命中的构建缓存要加 `go build -trimpath` 这类选项。
+- overlay 的视图只在会话里可见，宿主上它的路径是空的挂载点，要看里面用 `exec`。
 - 会话之间完全隔离，冲突只能在推送之后、在 PR 里发现。
 - `drop` 会删除未推送的工作。
 

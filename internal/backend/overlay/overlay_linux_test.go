@@ -32,7 +32,7 @@ func git(t *testing.T, dir string, args ...string) string {
 }
 
 // setup returns a manager with an upstream bare repo registered as "demo"
-// and views mounted under a temp dir. It skips when this host cannot mount
+// in a temp dir. It skips when this host cannot mount
 // overlayfs in a new mount namespace.
 func setup(t *testing.T) (*manager.Manager, string) {
 	t.Helper()
@@ -41,7 +41,6 @@ func setup(t *testing.T) (*manager.Manager, string) {
 	t.Setenv("GIT_COMMITTER_NAME", "test")
 	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
 	tmp := t.TempDir()
-	t.Setenv(overlay.EnvViewRoot, filepath.Join(tmp, "workspace"))
 	probe(t, tmp)
 
 	src := filepath.Join(tmp, "src")
@@ -100,7 +99,7 @@ func TestDefaultOnLinux(t *testing.T) {
 	}
 }
 
-func TestSamePathIsolatedViews(t *testing.T) {
+func TestIsolatedViews(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
 
@@ -112,8 +111,8 @@ func TestSamePathIsolatedViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.ViewPath != b.ViewPath || filepath.Base(a.ViewPath) != "demo" {
-		t.Fatalf("want one shared view path ending in demo, got %q and %q", a.ViewPath, b.ViewPath)
+	if a.ViewPath == b.ViewPath || filepath.Base(filepath.Dir(a.ViewPath)) != "a" {
+		t.Fatalf("want a view path per session, got %q and %q", a.ViewPath, b.ViewPath)
 	}
 
 	execIn(t, m, "a", "sh", "-c", "echo from-a >> README.md && git commit --quiet -am a")

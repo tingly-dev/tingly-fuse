@@ -21,9 +21,9 @@ tingly-fuse separates what can be shared from what must be private:
 |---|---|
 | Git objects (one bare mirror per repo) | Working-tree changes |
 | Unchanged files of the base checkout | Index, `HEAD`, branch |
-| Build caches, when the path is the same | Anything the agent writes |
+| Build caches that do not key on the path | Anything the agent writes |
 
-On Linux, every session sees the repository at **the same path** (`/workspace/<repo>` by default), each through its own mount namespace. Path-keyed caches keep hitting, so from the second session on, the tingly-box `go build` drops from about 150 s to about 15 s. Creating a session takes about 30 ms and roughly 100 KB of disk. See the [benchmarks](bench/README.md).
+Every session has its own path, `~/.tingly-fuse/sessions/<id>/root`, on every platform. Build caches keyed on absolute paths need the tool's own option to ignore them: with `go build -trimpath` and a shared `GOCACHE`, building tingly-box in a second session takes about 10 s instead of about 90 s. On Linux, creating a session takes about 30 ms and roughly 100 KB of disk. See the [benchmarks](bench/README.md) and [ADR 0014](.design/decisions/0014-per-session-view-path.md).
 
 ## How it works
 
@@ -35,7 +35,7 @@ On Linux, every session sees the repository at **the same path** (`/workspace/<r
           ┌─────────────────┼─────────────────┐
           ▼                 ▼                 ▼
       session A         session B         session C        copy-on-write views
-  /workspace/<repo>  /workspace/<repo>  /workspace/<repo>  (same path on Linux)
+ sessions/A/root    sessions/B/root    sessions/C/root    (one path per session)
    branch agent/A     branch agent/B     branch agent/C
           │                 │                 │
           └──────── git push to upstream ─────┘  →  merge via PR on the remote
@@ -53,7 +53,7 @@ tingly-fuse does not prepare environments (installing dependencies, building). D
 ## Requirements
 
 - Go 1.24+ to build, and `git` on `PATH`.
-- **Linux** (default `overlay` backend): overlayfs and `nsenter` (util-linux). As non-root you also need Linux 5.11+ with unprivileged user namespaces enabled, and a writable view root (see [Linux setup](#linux-setup)).
+- **Linux** (default `overlay` backend): overlayfs and `nsenter` (util-linux). As non-root you also need Linux 5.11+ with unprivileged user namespaces enabled.
 - **macOS** (default `clone` backend): an APFS volume for copy-on-write. Other volumes fall back to a full copy.
 - Anywhere else, or as a fallback, use `--backend copy`.
 
@@ -64,16 +64,6 @@ go install github.com/tingly-dev/tingly-fuse/cmd/tingly-fuse@latest
 # or, from a clone of this repo
 go build -o tingly-fuse ./cmd/tingly-fuse
 ```
-
-### Linux setup
-
-As a non-root user, create the view root once:
-
-```sh
-sudo mkdir -p /workspace && sudo chown "$USER" /workspace
-```
-
-Or point it somewhere you already own with `TINGLY_FUSE_VIEW_ROOT=/path/to/views`.
 
 ## Quick start
 
@@ -223,7 +213,6 @@ Configuration:
 | Variable | Default | Meaning |
 |---|---|---|
 | `TINGLY_FUSE_HOME` | `~/.tingly-fuse` | State directory |
-| `TINGLY_FUSE_VIEW_ROOT` | `/workspace` | Linux overlay view root; read at `spawn` and stored with the session |
 
 ## Backends
 
@@ -231,7 +220,7 @@ A backend only decides where a session's file tree lives and how to start a proc
 
 | Backend | Platform | View path | How |
 |---|---|---|---|
-| `overlay` | Linux (default) | Same for every session, `/workspace/<repo>` | One long-lived mount namespace per session with overlayfs (lower = base, upper = session). Invisible to the host and to other sessions. |
+| `overlay` | Linux (default) | Different per session | One long-lived mount namespace per session with overlayfs (lower = base, upper = session). Invisible to the host and to other sessions: on the host the view path is an empty mount point. |
 | `clone` | macOS (default) | Different per session | APFS `clonefile` copy-on-write; full copy on non-APFS volumes |
 | `copy` | Any | Different per session | Full copy of the base; the reference implementation and fallback |
 
@@ -254,7 +243,8 @@ Concurrent `exec` calls on one overlay session join the same mount, so they see 
 
 ## Limitations
 
-- macOS has no mount namespaces, so sessions there get different paths. Mitigate with `TINGLY_WORKSPACE` in scripts and `go build -trimpath`. A same-path mode through a lightweight Linux VM is an idea, not implemented.
+- Each session has a different path. Scripts should read `TINGLY_WORKSPACE`; path-keyed build caches need options such as `go build -trimpath`.
+- An overlay view is only visible inside its session: on the host, its path is an empty mount point. Use `exec` to look inside.
 - Sessions are fully isolated. Conflicts between sessions show up only after pushing, in the PR.
 - `drop` deletes unpushed work.
 

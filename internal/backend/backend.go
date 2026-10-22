@@ -2,8 +2,10 @@
 // created and entered. Each platform provides its own implementation:
 //
 //   - copy:    full copy of the base (baseline, works everywhere)
-//   - overlay: Linux mount namespace + overlayfs at a fixed path
+//   - overlay: Linux mount namespace + overlayfs
 //   - clone:   macOS APFS clonefile copy-on-write
+//
+// Every backend gives each session a different view path (ADR 0014).
 //
 // The manager owns everything git- and session-related; a backend only
 // answers "where does this session's tree live and how do I run a process
