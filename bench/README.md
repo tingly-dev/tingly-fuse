@@ -9,7 +9,7 @@
 | reflink | 同 copy，但 `cp -a --reflink=always`（Linux 上相当于 APFS clonefile） | 每会话不同 |
 | overlay | tingly-fuse `overlay` 后端（6996d6f，常驻 mount namespace + overlayfs） | 所有会话都是 `/workspace/tingly-box` |
 
-脚本：[bench.sh](bench.sh)。原始数据：[results/xfs.csv](results/xfs.csv)、[results/ext4.csv](results/ext4.csv)，环境见 [results/env.txt](results/env.txt)。
+脚本：[bench.sh](bench.sh)。从零开 N 个工作区并构建（含一次性成本）的对比见 [spinup.md](spinup.md)。原始数据：[results/xfs.csv](results/xfs.csv)、[results/ext4.csv](results/ext4.csv)，环境见 [results/env.txt](results/env.txt)。
 
 ## 结论
 

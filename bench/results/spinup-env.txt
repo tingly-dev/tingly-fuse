@@ -1,0 +1,1 @@
+date: 2026-10-22T02:55:31Z  upstream: https://github.com/tingly-dev/tingly-box @ 00b45f9  N=3  go flags: -trimpath  kernel: 6.18.44-fc-v139  cpus: 4  fs: ext4  git: 2.43.0  pnpm: 10.28.0  tingly-fuse: 60805f2
