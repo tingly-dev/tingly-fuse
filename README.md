@@ -53,7 +53,7 @@ tingly-fuse does not prepare environments (installing dependencies, building). D
 ## Requirements
 
 - Go 1.24+ to build, and `git` on `PATH`.
-- **Linux** (default `overlay` backend): overlayfs and `nsenter` (util-linux). As non-root you also need Linux 5.11+ with unprivileged user namespaces enabled.
+- **Linux**: as root the default `overlay` backend mounts overlayfs on the host. As non-root the default `fuse-overlay` backend needs `fuse-overlayfs` and `/dev/fuse`. The `overlay-ns` backend (a view only commands run by tingly-fuse can see) needs `nsenter` (util-linux), and as non-root Linux 5.11+ with unprivileged user namespaces.
 - **macOS** (default `clone` backend): an APFS volume for copy-on-write. Other volumes fall back to a full copy.
 - Anywhere else, or as a fallback, use `--backend copy`.
 
@@ -167,7 +167,7 @@ The commands before this split (`repo add`, `spawn`, `push`, `repo check`, `repo
 | `--from-dir <dir>` | Snapshot a prepared checkout as the base, instead of a commit |
 | `--base <id>` | Reuse an existing base (the id `git worktree add` prints as `base:`, or the BASE column of `list`) |
 | `--id <id>` | Session id (default: random) |
-| `--backend <name>` | `overlay`, `clone` or `copy` (default depends on the platform) |
+| `--backend <name>` | `overlay`, `fuse-overlay`, `overlay-ns`, `clone` or `copy` (default depends on the platform and user) |
 | `--share <path>` | Also share this path, on top of the repository's shared paths, with every other session spawned with it (repeatable or comma-separated) |
 
 `spawn` takes `--base`, `--id`, `--backend` and `--share` with the same meaning. If either fails partway, it cleans up everything it created.
@@ -220,11 +220,13 @@ A backend only decides where a session's file tree lives and how to start a proc
 
 | Backend | Platform | View path | How |
 |---|---|---|---|
-| `overlay` | Linux (default) | Different per session | One long-lived mount namespace per session with overlayfs (lower = base, upper = session). Invisible to the host and to other sessions: on the host the view path is an empty mount point. |
+| `overlay` | Linux, root (default for root) | Different per session | Kernel overlayfs mounted on the host at the view path (lower = base, upper = session). Visible to everything on the machine: shells, editors, IDEs ([ADR 0015](.design/decisions/0015-host-visible-overlay-view.md)). |
+| `fuse-overlay` | Linux, any user (default for non-root) | Different per session | `fuse-overlayfs` mounted on the host at the view path; visible like `overlay`, goes through FUSE (builds up to about 25% slower, scanning the tree about 5x slower: [bench/hostview.md](bench/hostview.md)). Shared paths are symlinks. |
+| `overlay-ns` | Linux | Different per session | One long-lived mount namespace per session with overlayfs. Invisible to the host: on the host the view path is an empty mount point; works without root or FUSE. |
 | `clone` | macOS (default) | Different per session | APFS `clonefile` copy-on-write; full copy on non-APFS volumes |
 | `copy` | Any | Different per session | Full copy of the base; the reference implementation and fallback |
 
-Concurrent `exec` calls on one overlay session join the same mount, so they see each other's writes. If the holder process dies, the next `exec` remounts from the session's upper layer without losing writes.
+`overlay` and `fuse-overlay` mounts outlive the tingly-fuse process. After a reboot, or if the mount is lost, the next `exec` mounts the session's upper layer again without losing writes; `drop` unmounts, and fails (keeping the session) if a process is still using the view. With `overlay-ns`, concurrent `exec` calls join the same mount, and the next `exec` after the holder process dies remounts.
 
 ## State directory
 
@@ -238,13 +240,14 @@ Concurrent `exec` calls on one overlay session join the same mount, so they see 
 │   └── modules/<hash>.git     git only: submodule mirrors, shared across bases
 └── sessions/<id>/
     ├── session.json           repo, base, branch, backend, view path
-    └── ...                    backend state (overlay upper/work, holder.json)
+    └── ...                    backend state (overlay upper/work; overlay-ns holder.json)
 ```
 
 ## Limitations
 
 - Each session has a different path. Scripts should read `TINGLY_WORKSPACE`; path-keyed build caches need options such as `go build -trimpath`.
-- An overlay view is only visible inside its session: on the host, its path is an empty mount point. Use `exec` to look inside.
+- An `overlay-ns` view is only visible inside its session: on the host, its path is an empty mount point. Use `exec` to look inside, or use `overlay` or `fuse-overlay`.
+- `overlay` and `fuse-overlay` views are real directories on the host that you and an agent can both write; tingly-fuse does not coordinate that.
 - Sessions are fully isolated. Conflicts between sessions show up only after pushing, in the PR.
 - `drop` deletes unpushed work.
 
@@ -261,7 +264,7 @@ The tests are the harness that keeps the storage layer honest:
 
 | Layer | Where | What it checks |
 |---|---|---|
-| Scenarios | `internal/manager/lifecycle_test.go` | Upstream rewrites, `--from-dir` objects, submodules, fetch freshness, pin repair, prune and prune racing spawn. Each one runs on every backend usable on the host (copy and overlay on Linux, copy and clone on macOS) and ends with `git fsck` in the views |
+| Scenarios | `internal/manager/lifecycle_test.go` | Upstream rewrites, `--from-dir` objects, submodules, fetch freshness, pin repair, prune and prune racing spawn. Each one runs on every backend usable on the host (copy and the overlay backends on Linux, copy and clone on macOS) and ends with `git fsck` in the views |
 | CLI | `cmd/tingly-fuse/main_test.go` | Every command through the real binary: arguments, output, exit codes |
 | End to end | `bench/lifecycle.sh` | The same lifecycle on a real repository; `TF_OLD=<binary>` checks upgrading from an older version. Results in [bench/README.md](bench/README.md) |
 | CI | `.github/workflows/ci.yml` | gofmt, vet, the tests on Linux (also as root, so overlay never skips) and macOS, and the end-to-end script on copy and overlay |

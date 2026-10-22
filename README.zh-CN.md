@@ -53,7 +53,7 @@ tingly-fuse 不负责准备环境（装依赖、构建）。先在普通 checkou
 ## 环境要求
 
 - 构建需要 Go 1.24+，`PATH` 里要有 `git`。
-- **Linux**（默认 `overlay` 后端）：overlayfs 和 `nsenter`（util-linux）。非 root 用户还需要 Linux 5.11+、允许非特权 user namespace。
+- **Linux**：root 默认用 `overlay` 后端，在宿主上挂 overlayfs；非 root 默认用 `fuse-overlay`，需要 `fuse-overlayfs` 和 `/dev/fuse`。`overlay-ns` 后端（只有 tingly-fuse 启动的命令看得到的视图）需要 `nsenter`（util-linux），非 root 还需要 Linux 5.11+、允许非特权 user namespace。
 - **macOS**（默认 `clone` 后端）：APFS 卷才能写时复制，其他卷自动退回整份复制。
 - 其他平台或作为兜底，用 `--backend copy`。
 
@@ -167,7 +167,7 @@ Git 仓库。每个子命令都以对应的 git 命令命名，参数顺序也�
 | `--from-dir <dir>` | 把准备好的 checkout 快照成 base，代替 commit |
 | `--base <id>` | 复用已有 base（id 即 `git worktree add` 打印的 `base:`，或 `list` 的 BASE 列） |
 | `--id <id>` | 会话 id（默认随机） |
-| `--backend <name>` | `overlay`、`clone` 或 `copy`（默认值取决于平台） |
+| `--backend <name>` | `overlay`、`fuse-overlay`、`overlay-ns`、`clone` 或 `copy`（默认值取决于平台和用户） |
 | `--share <path>` | 在仓库的共享路径之外，再和其他带同一路径 spawn 的会话共享这个路径（可重复，也可逗号分隔） |
 
 `spawn` 也接受 `--base`、`--id`、`--backend`、`--share`，含义相同。两者中途失败都会清理掉已创建的一切。
@@ -220,11 +220,13 @@ m.Drop(ctx, s.ID)
 
 | 后端 | 平台 | 视图路径 | 机制 |
 |---|---|---|---|
-| `overlay` | Linux（默认） | 每会话不同 | 每会话一个常驻 mount namespace，里面挂 overlayfs（lower = base，upper = 会话）。宿主和其他会话都看不到，宿主上视图路径是空的挂载点 |
+| `overlay` | Linux，root（root 的默认） | 每会话不同 | 在宿主上把内核 overlayfs 挂到视图路径（lower = base，upper = 会话）。机器上的 shell、编辑器、IDE 都能直接看到（[ADR 0015](.design/decisions/0015-host-visible-overlay-view.md)） |
+| `fuse-overlay` | Linux，任何用户（非 root 的默认） | 每会话不同 | `fuse-overlayfs` 挂在宿主上的视图路径，和 `overlay` 一样可见，但走 FUSE（构建最多慢约 25%，扫整棵树约慢 5 倍：[bench/hostview.md](bench/hostview.md)）。共享路径用符号链接 |
+| `overlay-ns` | Linux | 每会话不同 | 每会话一个常驻 mount namespace，里面挂 overlayfs。宿主上看不到，视图路径是空的挂载点；不需要 root 和 FUSE |
 | `clone` | macOS（默认） | 每会话不同 | APFS `clonefile` 写时复制；非 APFS 卷整份复制 |
 | `copy` | 全平台 | 每会话不同 | 整份复制 base，作为基准实现和兜底 |
 
-同一个 overlay 会话上的并发 `exec` 进入的是同一个挂载，能互相看到写入。holder 进程意外退出后，下一次 `exec` 会用会话的 upper 层重新挂载，写入不会丢。
+`overlay` 和 `fuse-overlay` 的挂载在 tingly-fuse 进程退出后仍在。重启机器或挂载丢失后，下一次 `exec` 会用会话的 upper 层重新挂载，写入不会丢；`drop` 会卸载，有进程还在用视图时报错并保留会话。`overlay-ns` 下，并发 `exec` 进入同一个挂载；holder 进程意外退出后，下一次 `exec` 重新挂载。
 
 ## 状态目录
 
@@ -238,13 +240,14 @@ m.Drop(ctx, s.ID)
 │   └── modules/<hash>.git     仅 Git：子模块镜像，跨 base 共用
 └── sessions/<id>/
     ├── session.json           仓库、base、分支、后端、视图路径
-    └── ...                    后端状态（overlay 的 upper/work、holder.json）
+    └── ...                    后端状态（overlay 的 upper/work；overlay-ns 的 holder.json）
 ```
 
 ## 已知限制
 
 - 每个会话路径不同。脚本应读 `TINGLY_WORKSPACE`；按路径命中的构建缓存要加 `go build -trimpath` 这类选项。
-- overlay 的视图只在会话里可见，宿主上它的路径是空的挂载点，要看里面用 `exec`。
+- `overlay-ns` 的视图只在会话里可见，宿主上它的路径是空的挂载点，要看里面用 `exec`，或者改用 `overlay`、`fuse-overlay`。
+- `overlay` 和 `fuse-overlay` 的视图是宿主上的真目录，人和 agent 可以同时写，tingly-fuse 不做协调。
 - 会话之间完全隔离，冲突只能在推送之后、在 PR 里发现。
 - `drop` 会删除未推送的工作。
 
@@ -261,7 +264,7 @@ bench/lifecycle.sh                  # 在真实 tingly-box 上端到端（需要
 
 | 层次 | 位置 | 检查什么 |
 |---|---|---|
-| 场景 | `internal/manager/lifecycle_test.go` | 上游改写历史、`--from-dir` 的对象、子模块、fetch 新鲜度、补固定、prune 以及 prune 与 spawn 并发。每个场景在本机能用的所有后端上跑（Linux 上 copy 和 overlay，macOS 上 copy 和 clone），最后在视图里 `git fsck` |
+| 场景 | `internal/manager/lifecycle_test.go` | 上游改写历史、`--from-dir` 的对象、子模块、fetch 新鲜度、补固定、prune 以及 prune 与 spawn 并发。每个场景在本机能用的所有后端上跑（Linux 上 copy 和各 overlay 后端，macOS 上 copy 和 clone），最后在视图里 `git fsck` |
 | CLI | `cmd/tingly-fuse/main_test.go` | 通过真实二进制跑每个命令：参数、输出、退出码 |
 | 端到端 | `bench/lifecycle.sh` | 在真实仓库上跑同样的生命周期；`TF_OLD=<二进制>` 验证从旧版本升级。结果见 [bench/README.md](bench/README.md) |
 | CI | `.github/workflows/ci.yml` | gofmt、vet；Linux（另以 root 跑一遍，overlay 不会被跳过）和 macOS 上的测试；copy 和 overlay 上的端到端脚本 |

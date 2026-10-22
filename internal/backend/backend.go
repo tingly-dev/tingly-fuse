@@ -2,7 +2,8 @@
 // created and entered. Each platform provides its own implementation:
 //
 //   - copy:    full copy of the base (baseline, works everywhere)
-//   - overlay: Linux mount namespace + overlayfs
+//   - overlay: Linux overlayfs mounted on the host (also fuse-overlay for
+//     non-root, overlay-ns inside a private mount namespace)
 //   - clone:   macOS APFS clonefile copy-on-write
 //
 // Every backend gives each session a different view path (ADR 0014).

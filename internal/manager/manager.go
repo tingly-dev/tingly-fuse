@@ -162,7 +162,12 @@ func (m *Manager) newSession(ctx context.Context, r *repo.Repo, b backend.Backen
 	ws := backend.Workspace{ID: sess.ID, Repo: r.Name, BaseDir: baseDir, StateDir: m.sessions.Dir(sess.ID)}
 	defer func() {
 		if err != nil {
-			_ = b.Remove(context.WithoutCancel(ctx), ws)
+			// A view that cannot be removed (still mounted) must not have
+			// its directory deleted from under it.
+			if rerr := b.Remove(context.WithoutCancel(ctx), ws); rerr != nil {
+				err = errors.Join(err, rerr)
+				return
+			}
 			if r.SharedGit {
 				_ = r.RemoveSessionGitDir(sess.ID)
 			}
@@ -357,7 +362,13 @@ func (m *Manager) Drop(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	errs := []error{b.Remove(ctx, ws)}
+	// If the view cannot be removed, keep the session so Drop can be retried:
+	// deleting its directory while the view is mounted would delete through
+	// the mount, shared paths included.
+	if err := b.Remove(ctx, ws); err != nil {
+		return err
+	}
+	var errs []error
 	if r, rerr := repo.Open(m.Home, sess.Repo); rerr != nil {
 		errs = append(errs, rerr)
 	} else if r.SharedGit {

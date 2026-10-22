@@ -7,24 +7,26 @@ import (
 	"testing"
 
 	"github.com/tingly-dev/tingly-fuse/internal/backend"
-	"github.com/tingly-dev/tingly-fuse/internal/backend/overlay"
+	_ "github.com/tingly-dev/tingly-fuse/internal/backend/overlay"
 )
 
 // Importing overlay makes it the default; the other tests in this package
 // are written against copy.
 func init() { backend.Default = "copy" }
 
-func platformBackends() []string { return []string{"copy", "overlay"} }
+func platformBackends() []string { return []string{"copy", "overlay", "fuse-overlay", "overlay-ns"} }
 
 func usable(t *testing.T, name string) error {
-	if name != "overlay" {
+	if name == "copy" {
 		return nil
 	}
 	tmp := t.TempDir()
 	ws := backend.Workspace{ID: "probe", Repo: "probe", BaseDir: filepath.Join(tmp, "base"), StateDir: filepath.Join(tmp, "state")}
 	os.MkdirAll(ws.BaseDir, 0o755)
-	b := overlay.Backend{}
-	var err error
+	b, err := backend.Get(name)
+	if err != nil {
+		return err
+	}
 	if ws.ViewPath, err = b.Create(context.Background(), ws); err != nil {
 		return err
 	}

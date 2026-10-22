@@ -100,7 +100,7 @@ func Open(home string) (*Manager, error) {
 func Backends() []string { return backend.Names() }
 
 // CheckBackend reports whether backend name can run sessions on this host
-// (overlay needs mount and, unprivileged, user namespaces), by creating and
+// (overlay needs root, fuse-overlay needs fuse-overlayfs and /dev/fuse), by creating and
 // entering a throwaway view.
 func CheckBackend(ctx context.Context, name string) error {
 	b, err := backend.Get(name)

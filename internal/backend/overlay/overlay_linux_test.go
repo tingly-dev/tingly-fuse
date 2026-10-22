@@ -18,6 +18,7 @@ import (
 	"github.com/tingly-dev/tingly-fuse/internal/backend/overlay"
 	"github.com/tingly-dev/tingly-fuse/internal/manager"
 	"github.com/tingly-dev/tingly-fuse/internal/repo"
+	"github.com/tingly-dev/tingly-fuse/internal/session"
 )
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -36,12 +37,19 @@ func git(t *testing.T, dir string, args ...string) string {
 // overlayfs in a new mount namespace.
 func setup(t *testing.T) (*manager.Manager, string) {
 	t.Helper()
+	return setupFor(t, "overlay-ns")
+}
+
+// setupFor is setup for the named backend; it skips when that backend cannot
+// run here.
+func setupFor(t *testing.T, name string) (*manager.Manager, string) {
+	t.Helper()
 	t.Setenv("GIT_AUTHOR_NAME", "test")
 	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
 	t.Setenv("GIT_COMMITTER_NAME", "test")
 	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
 	tmp := t.TempDir()
-	probe(t, tmp)
+	probe(t, tmp, name)
 
 	src := filepath.Join(tmp, "src")
 	git(t, tmp, "init", "--quiet", "--initial-branch=main", src)
@@ -65,22 +73,24 @@ func setup(t *testing.T) (*manager.Manager, string) {
 	return m, upstream
 }
 
-func probe(t *testing.T, tmp string) {
+func probe(t *testing.T, tmp, name string) {
 	t.Helper()
 	ws := backend.Workspace{ID: "probe", Repo: "probe", BaseDir: filepath.Join(tmp, "probe-base"), StateDir: filepath.Join(tmp, "probe-state")}
 	os.MkdirAll(ws.BaseDir, 0o755)
-	b := overlay.Backend{}
-	var err error
+	b, err := backend.Get(name)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ws.ViewPath, err = b.Create(context.Background(), ws); err != nil {
-		t.Skipf("overlay backend unavailable: %v", err)
+		t.Skipf("%s backend unavailable: %v", name, err)
 	}
 	defer b.Remove(context.Background(), ws)
 	cmd, err := b.Command(context.Background(), ws, []string{"true"})
 	if err != nil {
-		t.Skipf("overlay backend unavailable: %v", err)
+		t.Skipf("%s backend unavailable: %v", name, err)
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("overlay backend unavailable: %v: %s", err, out)
+		t.Skipf("%s backend unavailable: %v: %s", name, err, out)
 	}
 }
 
@@ -94,20 +104,30 @@ func execIn(t *testing.T, m *manager.Manager, id string, argv ...string) string 
 }
 
 func TestDefaultOnLinux(t *testing.T) {
-	if backend.Default != "overlay" {
-		t.Errorf("default backend = %q", backend.Default)
+	want := "fuse-overlay"
+	if os.Geteuid() == 0 {
+		want = "overlay"
+	}
+	if backend.Default != want {
+		t.Errorf("default backend = %q, want %q", backend.Default, want)
 	}
 }
 
 func TestIsolatedViews(t *testing.T) {
-	m, upstream := setup(t)
+	for _, name := range []string{"overlay", "fuse-overlay", "overlay-ns"} {
+		t.Run(name, func(t *testing.T) { testIsolatedViews(t, name) })
+	}
+}
+
+func testIsolatedViews(t *testing.T, name string) {
+	m, upstream := setupFor(t, name)
 	ctx := context.Background()
 
-	a, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a", Backend: "overlay"})
+	a, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a", Backend: name})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "b", Backend: "overlay"})
+	b, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "b", Backend: name})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,9 +164,13 @@ func TestIsolatedViews(t *testing.T) {
 		t.Errorf("exit status: %v", err)
 	}
 
-	// The mount is invisible from the host.
-	if entries, _ := os.ReadDir(a.ViewPath); len(entries) != 0 {
-		t.Errorf("host sees files at the view path: %v", entries)
+	if name == "overlay-ns" {
+		// Only commands run through the session see the mount.
+		if entries, _ := os.ReadDir(a.ViewPath); len(entries) != 0 {
+			t.Errorf("host sees files at the view path: %v", entries)
+		}
+	} else {
+		hostSeesView(t, m, a, b)
 	}
 
 	for _, id := range []string{"a", "b"} {
@@ -189,15 +213,59 @@ func TestIsolatedViews(t *testing.T) {
 	}
 }
 
+// hostSeesView checks the view is an ordinary directory on the host: what a
+// command writes in a session is there to read and edit, and the reverse.
+func hostSeesView(t *testing.T, m *manager.Manager, a, b *session.Session) {
+	t.Helper()
+	if got, err := os.ReadFile(filepath.Join(a.ViewPath, "README.md")); err != nil || string(got) != "hello\nfrom-a\n" {
+		t.Errorf("host reads a's README.md = %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(a.ViewPath, "NOTES.md")); !os.IsNotExist(err) {
+		t.Errorf("host sees b's file in a's view: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(b.ViewPath, "NOTES.md")); err != nil || string(got) != "from-b\n" {
+		t.Errorf("host reads b's NOTES.md = %q, %v", got, err)
+	}
+	if err := os.WriteFile(filepath.Join(a.ViewPath, "FROM_HOST"), []byte("host\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := execIn(t, m, a.ID, "cat", "FROM_HOST"); got != "host" {
+		t.Errorf("session reads the host's file = %q", got)
+	}
+	execIn(t, m, a.ID, "sh", "-c", "echo edited > EDITED")
+	if got, _ := os.ReadFile(filepath.Join(a.ViewPath, "EDITED")); string(got) != "edited\n" {
+		t.Errorf("host reads EDITED = %q", got)
+	}
+	// An editor on the host works on the checkout: git there sees the changes.
+	if out := git(t, a.ViewPath, "status", "--porcelain"); !strings.Contains(out, "EDITED") || !strings.Contains(out, "FROM_HOST") {
+		t.Errorf("git status on the host = %q", out)
+	}
+	if n := len(mountsOf(a.ViewPath)); n != 1 {
+		t.Errorf("mounts at a's view on the host = %d, want 1", n)
+	}
+}
+
+// mountsOf lists mountinfo lines whose mount point is dir.
+func mountsOf(dir string) []string {
+	data, _ := os.ReadFile("/proc/self/mountinfo")
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if f := strings.Fields(line); len(f) > 4 && f[4] == dir {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 func TestRemovePartial(t *testing.T) {
 	tmp := t.TempDir()
 	ws := backend.Workspace{ID: "x", Repo: "x", StateDir: filepath.Join(tmp, "state")}
-	if err := (overlay.Backend{}).Remove(context.Background(), ws); err != nil {
+	if err := (overlay.NSBackend{}).Remove(context.Background(), ws); err != nil {
 		t.Fatalf("remove of never-created workspace: %v", err)
 	}
 	os.MkdirAll(filepath.Join(ws.StateDir, "work", "work"), 0o755)
 	os.Chmod(filepath.Join(ws.StateDir, "work", "work"), 0)
-	if err := (overlay.Backend{}).Remove(context.Background(), ws); err != nil {
+	if err := (overlay.NSBackend{}).Remove(context.Background(), ws); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 }
@@ -247,7 +315,7 @@ func background(m *manager.Manager, id string, argv ...string) func() (string, e
 
 func TestConcurrentExecSharesOneMount(t *testing.T) {
 	m, _ := setup(t)
-	if _, err := m.Git().AddWorktree(context.Background(), manager.WorktreeOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
+	if _, err := m.Git().AddWorktree(context.Background(), manager.WorktreeOptions{Repo: "demo", ID: "s", Backend: "overlay-ns"}); err != nil {
 		t.Fatal(err)
 	}
 	const wait = `i=0; while [ ! -f "$1" ]; do sleep 0.02; i=$((i+1)); [ $i -lt 500 ] || exit 3; done`
@@ -269,7 +337,7 @@ func TestConcurrentExecSharesOneMount(t *testing.T) {
 
 func TestHolderRecovery(t *testing.T) {
 	m, _ := setup(t)
-	if _, err := m.Git().AddWorktree(context.Background(), manager.WorktreeOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
+	if _, err := m.Git().AddWorktree(context.Background(), manager.WorktreeOptions{Repo: "demo", ID: "s", Backend: "overlay-ns"}); err != nil {
 		t.Fatal(err)
 	}
 	execIn(t, m, "s", "sh", "-c", "echo kept > X")
@@ -313,5 +381,134 @@ func TestHolderRecovery(t *testing.T) {
 	}
 	if _, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/mnt", pid)); err == nil {
 		t.Errorf("holder %d still running after drop", pid)
+	}
+}
+
+// hostBackends are the ones that mount on the host, so the view is visible.
+var hostBackends = []string{"overlay", "fuse-overlay"}
+
+func TestHostDropUnmounts(t *testing.T) {
+	for _, name := range hostBackends {
+		t.Run(name, func(t *testing.T) {
+			m, _ := setupFor(t, name)
+			ctx := context.Background()
+			s, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "s", Backend: name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := len(mountsOf(s.ViewPath)); n != 1 {
+				t.Fatalf("mounts at the view after spawn = %d, want 1", n)
+			}
+			execIn(t, m, "s", "sh", "-c", "echo kept > X")
+			// Several commands and spawns on the same session never stack mounts.
+			execIn(t, m, "s", "true")
+			if n := len(mountsOf(s.ViewPath)); n != 1 {
+				t.Errorf("mounts at the view after exec = %d, want 1", n)
+			}
+
+			// A command still running in the view makes drop fail, and
+			// nothing is deleted: the session can be dropped once it ends.
+			stop := filepath.Join(t.TempDir(), "stop")
+			long := background(m, "s", "sh", "-c", `while [ ! -f "$1" ]; do sleep 0.02; done`, "sh", stop)
+			time.Sleep(200 * time.Millisecond)
+			if err := m.Drop(ctx, "s"); err == nil {
+				t.Errorf("drop succeeded while a command runs in the view")
+			}
+			if got, _ := os.ReadFile(filepath.Join(s.ViewPath, "X")); string(got) != "kept\n" {
+				t.Errorf("after refused drop X = %q", got)
+			}
+			os.WriteFile(stop, nil, 0o644)
+			if _, err := long(); err != nil {
+				t.Errorf("long-running command: %v", err)
+			}
+
+			if err := m.Drop(ctx, "s"); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(mountsOf(s.ViewPath)); n != 0 {
+				t.Errorf("mounts left after drop = %d", n)
+			}
+			if _, err := os.Stat(filepath.Join(m.Home, "sessions", "s")); !os.IsNotExist(err) {
+				t.Errorf("session state left after drop: %v", err)
+			}
+		})
+	}
+}
+
+// A reboot or an admin's umount takes the mount away; the next command
+// mounts the same upper dir again and nothing written is lost.
+func TestHostRemountAfterLoss(t *testing.T) {
+	for _, name := range hostBackends {
+		t.Run(name, func(t *testing.T) {
+			m, _ := setupFor(t, name)
+			ctx := context.Background()
+			s, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "s", Backend: name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			execIn(t, m, "s", "sh", "-c", "echo kept > X")
+			unmount(t, s.ViewPath)
+			if _, err := os.Stat(filepath.Join(s.ViewPath, "X")); err == nil {
+				t.Fatalf("view still shows files after unmount")
+			}
+			if got := execIn(t, m, "s", "cat", "X"); got != "kept" {
+				t.Errorf("after remount X = %q", got)
+			}
+			if n := len(mountsOf(s.ViewPath)); n != 1 {
+				t.Errorf("mounts after remount = %d, want 1", n)
+			}
+		})
+	}
+}
+
+// A FUSE daemon that died leaves a mount that fails every access; the next
+// command detaches it and mounts again.
+func TestFuseRecoversDeadDaemon(t *testing.T) {
+	m, _ := setupFor(t, "fuse-overlay")
+	s, err := m.Git().AddWorktree(context.Background(), manager.WorktreeOptions{Repo: "demo", ID: "s", Backend: "fuse-overlay"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execIn(t, m, "s", "sh", "-c", "echo kept > X")
+	out, err := exec.Command("pkill", "-KILL", "-f", "fuse-overlayfs.*"+s.ViewPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("kill daemon: %v: %s", err, out)
+	}
+	for i := 0; i < 200; i++ {
+		if _, err := os.Stat(s.ViewPath); err != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(s.ViewPath); err == nil {
+		t.Fatal("view still works after killing the daemon")
+	}
+	if got := execIn(t, m, "s", "cat", "X"); got != "kept" {
+		t.Errorf("after daemon restart X = %q", got)
+	}
+}
+
+func unmount(t *testing.T, view string) {
+	t.Helper()
+	var cmd *exec.Cmd
+	if os.Geteuid() == 0 {
+		cmd = exec.Command("umount", view)
+	} else {
+		cmd = exec.Command("fusermount3", "-u", view)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("unmount: %v: %s", err, out)
+	}
+}
+
+func TestOverlayNeedsRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root")
+	}
+	tmp := t.TempDir()
+	ws := backend.Workspace{ID: "x", BaseDir: filepath.Join(tmp, "base"), StateDir: filepath.Join(tmp, "state")}
+	os.MkdirAll(ws.BaseDir, 0o755)
+	if _, err := (overlay.Backend{}).Create(context.Background(), ws); err == nil || !strings.Contains(err.Error(), "needs root") {
+		t.Errorf("create as non-root: %v", err)
 	}
 }

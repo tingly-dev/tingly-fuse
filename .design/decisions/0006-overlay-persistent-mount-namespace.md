@@ -1,6 +1,6 @@
 # 0006 overlay 后端每会话一个常驻 mount namespace
 
-- 状态：已采纳
+- 状态：已采纳；新会话的 `overlay` 改为在宿主上挂载（[0015](0015-host-visible-overlay-view.md)），本条描述的做法现在是 `overlay-ns` 后端，已有会话照旧
 - 日期：2026-10-17
 
 ## 背景

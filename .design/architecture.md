@@ -26,8 +26,8 @@ repos/<name>/shared.git         仅 --shared-git：所有会话共用的 refs、
 repos/<name>/bases/<sha>/       某个 commit 的只读基础 checkout
 repos/<name>/bases/dir-<sha12>-<t>/  由 git worktree add --from-dir 从现成目录快照出的基础 checkout
 sessions/<id>/session.json      会话元数据（repo、base、分支、后端、视图路径）
-sessions/<id>/root/             会话的视图（所有后端；overlay 下宿主上是空的挂载点）
-sessions/<id>/...               后端私有状态（overlay 的 upper/work、holder.json 等）
+sessions/<id>/root/             会话的视图（所有后端；overlay-ns 下宿主上是空的挂载点）
+sessions/<id>/...               后端私有状态（overlay 的 upper/work；overlay-ns 的 holder.json 等）
 ```
 
 基础 checkout 的 `.git` 以及它的子模块仓库都只带 alternates，指向上面的镜像，自己不存对象。原因见 [0003](decisions/0003-shared-objects-via-alternates.md)。每个 base 在它借用的每个镜像里都有固定 ref，镜像 gc 时不会删掉 base 还要用的对象（[0008](decisions/0008-pin-base-objects-in-mirrors.md)）。
@@ -75,15 +75,18 @@ Git 层，子命令按对应的 git 命令命名，会话就是一个 worktree�
 | 后端 | 平台 | 视图路径 | 机制 |
 |---|---|---|---|
 | `copy` | 全平台 | 每会话不同 | 整份复制 base，作为基准对照和兜底 |
-| `overlay` | Linux（默认） | 每会话不同，`sessions/<id>/root` | 每会话一个常驻 mount namespace，里面挂 overlayfs（lower=base，upper/work 在会话目录），`exec` 用 `nsenter` 加入（[0006](decisions/0006-overlay-persistent-mount-namespace.md)） |
+| `overlay` | Linux root（root 时的默认） | 每会话不同，`sessions/<id>/root`，宿主可见 | 在宿主上直接挂内核 overlayfs（lower=base，upper/work 在会话目录），没有 holder；每次 `exec` 先确认挂载还在，不在就重挂（[0015](decisions/0015-host-visible-overlay-view.md)） |
+| `fuse-overlay` | Linux 任何用户（非 root 时的默认） | 同上，宿主可见 | `fuse-overlayfs` 挂在同一位置，走 FUSE，需要 `fuse-overlayfs` 和 `/dev/fuse`；共享路径用符号链接（[0015](decisions/0015-host-visible-overlay-view.md)） |
+| `overlay-ns` | Linux | 每会话不同，宿主上是空的挂载点 | 每会话一个常驻 mount namespace，里面挂 overlayfs，`exec` 用 `nsenter` 加入（[0006](decisions/0006-overlay-persistent-mount-namespace.md)）；不需要 root 和 FUSE，但只有 tingly-fuse 启动的进程看得到 |
 | `clone` | macOS（默认） | 每会话不同 | APFS `clonefile` 写时复制；非 APFS 卷退回整份复制 |
 
-约定：`Create` 只读 base，所有写入落在会话目录下（`Workspace.Shares` 里的共享路径除外：overlay 在 holder 里 bind mount，copy 和 clone 换成符号链接）；`Command` 的工作目录是视图根；`Remove` 要能处理只建了一半的工作区。
+约定：`Create` 只读 base，所有写入落在会话目录下（`Workspace.Shares` 里的共享路径除外：overlay 和 overlay-ns 用 bind mount，fuse-overlay、copy、clone 换成符号链接）；`Command` 的工作目录是视图根；`Remove` 要能处理只建了一半的工作区。
 
 ## 已知限制
 
-- overlay 的视图只在会话的 mount namespace 里有内容，宿主上 `sessions/<id>/root` 是空的挂载点，要看只能 `exec` 进去。让宿主直接可见（root 下挂在宿主、非 root 用 fuse-overlayfs 或 reflink）还没做（[0014](decisions/0014-per-session-view-path.md)）。
-- `overlay` 依赖 `nsenter`（util-linux）；非 root 需要 Linux 5.11+ 且允许非特权 user namespace。
+- `overlay` 和 `fuse-overlay` 的挂载在宿主上，进程退出后仍在，但机器重启后会丢；下一次 `exec` 才重挂，所以重启后直接打开没人 `exec` 过的会话目录会看到空目录。`drop` 时有进程还在视图里会报错并保留会话（[0015](decisions/0015-host-visible-overlay-view.md)）。
+- `fuse-overlay` 要 `fuse-overlayfs` 和 `/dev/fuse`；宿主上扫整个工作区比内核 overlay 慢（tingly-box 上 `git status` 约 0.3 秒对 0.05 秒），构建慢 0%–25%（[bench/hostview.md](../bench/hostview.md)）。
+- `overlay-ns` 依赖 `nsenter`（util-linux）；非 root 需要 Linux 5.11+ 且允许非特权 user namespace。它的视图宿主上看不到。
 - `clone` 后端已在真实的 Mac 上验证：克隆生效（spawn 0.09 秒、新会话约 2 MB），`go test -race ./...` 通过。注意 `du` 会把克隆和 base 共享的数据块重复计入，要看真实占用只能比较 `df` 前后的差值。
 - pnpm 在 overlay 下无法跨挂载点硬链接，依赖会整份复制；解决办法是让底层本来就带着装好的依赖：环境准备在 tingly-fuse 之前完成，再用 `git worktree add --from-dir` 把这个目录当底层（[0004](decisions/0004-environment-prep-out-of-scope.md)、[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)）。`--from-dir` 要求 `.git` 是目录，不支持 worktree。
 
