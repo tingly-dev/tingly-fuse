@@ -24,19 +24,33 @@ type Git struct{ m *Manager }
 // Git returns the manager's git layer.
 func (m *Manager) Git() *Git { return &Git{m} }
 
-// Add registers git repository upstream under name and mirrors it.
-func (g *Git) Add(ctx context.Context, name, upstream string, opts repo.AddOptions) (*repo.Repo, error) {
+// Clone registers git repository upstream under name and mirrors it. An
+// empty name is taken from upstream, as git clone names its directory.
+func (g *Git) Clone(ctx context.Context, upstream, name string, opts repo.AddOptions) (*repo.Repo, error) {
+	if name == "" {
+		name = RepoNameFromURL(upstream)
+	}
 	return repo.Add(ctx, g.m.Home, name, upstream, opts)
 }
 
-// GitSpawnOptions say where a session of a git repository starts, which
+// RepoNameFromURL is the name git clone would give upstream's directory:
+// its last path component without .git.
+func RepoNameFromURL(upstream string) string {
+	s := strings.TrimRight(upstream, "/")
+	if i := strings.LastIndexAny(s, "/:"); i >= 0 {
+		s = s[i+1:]
+	}
+	return strings.TrimSuffix(s, ".git")
+}
+
+// WorktreeOptions say where a session of a git repository starts, which
 // branch it works on and what it shares.
-type GitSpawnOptions struct {
+type WorktreeOptions struct {
 	Repo    string
-	From    string // revision to start from; default HEAD of the mirror
-	FromDir string // prepared checkout to snapshot as the base (instead of From)
-	Base    string // existing base id to reuse (instead of From or FromDir)
-	NoFetch bool   // resolve From against the mirror as is, fetching only if it is unknown
+	Commit  string // commit-ish to start from; default HEAD of the mirror
+	FromDir string // prepared checkout to snapshot as the base (instead of Commit)
+	Base    string // existing base id to reuse (instead of Commit or FromDir)
+	NoFetch bool   // resolve Commit against the mirror as is, fetching only if it is unknown
 	ID      string // optional; random when empty
 	Branch  string // optional; agent/<id> when empty
 	Backend string // optional; backend.Default when empty
@@ -45,9 +59,9 @@ type GitSpawnOptions struct {
 	Share []string
 }
 
-// Spawn creates a session of a git repository: a private view of the base
-// commit with a new branch checked out.
-func (g *Git) Spawn(ctx context.Context, opts GitSpawnOptions) (*session.Session, error) {
+// AddWorktree creates a session of a git repository, like git worktree
+// add: a private view of the base commit with a new branch checked out.
+func (g *Git) AddWorktree(ctx context.Context, opts WorktreeOptions) (*session.Session, error) {
 	r, err := g.open(opts.Repo)
 	if err != nil {
 		return nil, err
@@ -63,13 +77,13 @@ func (g *Git) Spawn(ctx context.Context, opts GitSpawnOptions) (*session.Session
 	}
 	defer unlock()
 	n := 0
-	for _, set := range []bool{opts.From != "", opts.FromDir != "", opts.Base != ""} {
+	for _, set := range []bool{opts.Commit != "", opts.FromDir != "", opts.Base != ""} {
 		if set {
 			n++
 		}
 	}
 	if n > 1 {
-		return nil, errors.New("--from, --from-dir and --base are mutually exclusive")
+		return nil, errors.New("a commit, --from-dir and --base are mutually exclusive")
 	}
 	var sha, head, source, baseDir string
 	switch {
@@ -88,7 +102,7 @@ func (g *Git) Spawn(ctx context.Context, opts GitSpawnOptions) (*session.Session
 			head = h
 		}
 	default:
-		if sha, err = r.Resolve(ctx, orDefault(opts.From, "HEAD"), !opts.NoFetch); err != nil {
+		if sha, err = r.Resolve(ctx, orDefault(opts.Commit, "HEAD"), !opts.NoFetch); err != nil {
 			return nil, err
 		}
 		if baseDir, err = r.EnsureBase(ctx, sha); err != nil {
@@ -136,7 +150,51 @@ func (g *Git) Fetch(ctx context.Context, name string) error {
 	return r.Fetch(ctx)
 }
 
-// BaseHealth is the state of one base as Check sees it.
+// Worktrees lists the sessions of git repositories, or of repository name
+// when it is set, oldest first.
+func (g *Git) Worktrees(name string) ([]*session.Session, error) {
+	if name != "" {
+		if _, err := g.open(name); err != nil {
+			return nil, err
+		}
+	}
+	sessions, err := g.m.sessions.List()
+	if err != nil {
+		return nil, err
+	}
+	gitRepo := map[string]bool{}
+	var out []*session.Session
+	for _, s := range sessions {
+		if name != "" && s.Repo != name {
+			continue
+		}
+		isGit, ok := gitRepo[s.Repo]
+		if !ok {
+			r, err := repo.Open(g.m.Home, s.Repo)
+			isGit = err == nil && r.IsGit()
+			gitRepo[s.Repo] = isGit
+		}
+		if isGit {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// RemoveWorktree drops a session of a git repository, like git worktree
+// remove; see Manager.Drop.
+func (g *Git) RemoveWorktree(ctx context.Context, id string) error {
+	sess, err := g.m.sessions.Get(id)
+	if err != nil {
+		return err
+	}
+	if _, err := g.open(sess.Repo); err != nil {
+		return err
+	}
+	return g.m.Drop(ctx, id)
+}
+
+// BaseHealth is the state of one base as Fsck sees it.
 type BaseHealth struct {
 	ID       string
 	Sessions int
@@ -144,10 +202,10 @@ type BaseHealth struct {
 	Err      error // fsck failure: objects it needs are missing
 }
 
-// Check reports, for every base of the repository, whether it is pinned
-// and whether git can still reach every object it needs. With fix set it
-// pins unpinned bases first; it cannot bring back objects already gone.
-func (g *Git) Check(ctx context.Context, name string, fix bool) ([]BaseHealth, error) {
+// Fsck reports, for every base of the repository, whether it is pinned
+// and whether git fsck can still reach every object it needs. With fix set
+// it pins unpinned bases first; it cannot bring back objects already gone.
+func (g *Git) Fsck(ctx context.Context, name string, fix bool) ([]BaseHealth, error) {
 	r, err := g.open(name)
 	if err != nil {
 		return nil, err

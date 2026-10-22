@@ -46,7 +46,7 @@ func setup(t *testing.T) (*manager.Manager, string) {
 
 	m := manager.New(filepath.Join(tmp, "home"))
 	dropAll(t, m)
-	if _, err := m.Git().Add(context.Background(), "demo", upstream, repo.AddOptions{}); err != nil {
+	if _, err := m.Git().Clone(context.Background(), upstream, "demo", repo.AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	return m, upstream
@@ -65,11 +65,11 @@ func TestSessionsAreIsolatedAndPushBranches(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
 
-	a, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "a"})
+	a, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "b", Branch: "feature/b"})
+	b, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "b", Branch: "feature/b"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestConcurrentSpawnSharesOneBase(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = m.Git().Spawn(context.Background(), manager.GitSpawnOptions{Repo: "demo"})
+			_, errs[i] = m.Git().AddWorktree(context.Background(), manager.WorktreeOptions{Repo: "demo"})
 		}(i)
 	}
 	wg.Wait()
@@ -154,13 +154,13 @@ func TestConcurrentSpawnSharesOneBase(t *testing.T) {
 func TestSpawnFailureCleansUp(t *testing.T) {
 	m, _ := setup(t)
 	ctx := context.Background()
-	if _, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "x", Branch: "bad..name"}); err == nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "x", Branch: "bad..name"}); err == nil {
 		t.Fatal("expected invalid branch name to fail")
 	}
 	if _, err := os.Stat(filepath.Join(m.Home, "sessions", "x")); !os.IsNotExist(err) {
 		t.Errorf("failed spawn left state behind: %v", err)
 	}
-	if _, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", Backend: "nope"}); err == nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", Backend: "nope"}); err == nil {
 		t.Error("expected unknown backend to fail")
 	}
 }
@@ -199,10 +199,10 @@ func TestSpawnChecksOutSubmodules(t *testing.T) {
 	git(t, tmp, "clone", "--quiet", "--bare", src, upstream)
 
 	m := manager.New(filepath.Join(tmp, "home"))
-	if _, err := m.Git().Add(ctx, "demo", upstream, repo.AddOptions{}); err != nil {
+	if _, err := m.Git().Clone(ctx, upstream, "demo", repo.AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	sess, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "s"})
+	sess, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestSpawnChecksOutSubmodules(t *testing.T) {
 func TestRemoveRepo(t *testing.T) {
 	m, _ := setup(t)
 	ctx := context.Background()
-	if _, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "a"}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.RemoveRepo(ctx, "demo", false); err == nil || !strings.Contains(err.Error(), "a") {
@@ -288,7 +288,7 @@ func TestSpawnFromDir(t *testing.T) {
 	git(t, prep, "add", "staged.txt")
 	head := git(t, prep, "rev-parse", "HEAD")
 
-	sess, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "a", FromDir: prep})
+	sess, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a", FromDir: prep})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,17 +324,17 @@ func TestSpawnFromDir(t *testing.T) {
 	}
 
 	// A second session reuses the snapshot, and can push.
-	if _, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "b", Base: sess.Base}); err != nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "b", Base: sess.Base}); err != nil {
 		t.Fatal(err)
 	}
 	execIn(t, m, "b", "sh", "-c", "echo b > b.txt && git add b.txt && git commit -qm b")
 	if err := m.Git().Push(ctx, "b", "", io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "c", Base: "nope"}); err == nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "c", Base: "nope"}); err == nil {
 		t.Error("unknown base accepted")
 	}
-	if _, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "d", Base: sess.Base, From: "main"}); err == nil {
+	if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "d", Base: sess.Base, Commit: "main"}); err == nil {
 		t.Error("--base with --from accepted")
 	}
 }
@@ -368,10 +368,10 @@ func TestSpawnFromDirWithSubmodule(t *testing.T) {
 	// src is itself the prepared directory; the submodule gitdir under
 	// .git/modules has its own objects.
 	m := manager.New(filepath.Join(tmp, "home"))
-	if _, err := m.Git().Add(ctx, "demo", upstream, repo.AddOptions{}); err != nil {
+	if _, err := m.Git().Clone(ctx, upstream, "demo", repo.AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	sess, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "s", FromDir: src})
+	sess, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "s", FromDir: src})
 	if err != nil {
 		t.Fatal(err)
 	}

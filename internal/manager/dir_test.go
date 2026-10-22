@@ -162,7 +162,7 @@ func TestLayerRefusals(t *testing.T) {
 	m, src := newDir(t)
 	ctx := context.Background()
 	_, upstream := setup(t)
-	if _, err := m.Git().Add(ctx, "g", upstream, repo.AddOptions{}); err != nil {
+	if _, err := m.Git().Clone(ctx, upstream, "g", repo.AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := m.AddDir(ctx, "d", src, repo.DirOptions{}); err != nil {
@@ -173,16 +173,16 @@ func TestLayerRefusals(t *testing.T) {
 	}
 	notGit := "plain directory, not a git repository"
 	for name, err := range map[string]error{
-		"git spawn": func() error { _, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "d"}); return err }(),
-		"git fetch": m.Git().Fetch(ctx, "d"),
-		"git check": func() error { _, err := m.Git().Check(ctx, "d", false); return err }(),
-		"git push":  m.Git().Push(ctx, "s", "", nil, nil),
+		"git worktree add": func() error { _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "d"}); return err }(),
+		"git fetch":        m.Git().Fetch(ctx, "d"),
+		"git fsck":         func() error { _, err := m.Git().Fsck(ctx, "d", false); return err }(),
+		"git push":         m.Git().Push(ctx, "s", "", nil, nil),
 	} {
 		if err == nil || !strings.Contains(err.Error(), notGit) {
 			t.Errorf("%s on a dir repo: %v", name, err)
 		}
 	}
-	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "g"}); err == nil || !strings.Contains(err.Error(), "git spawn") {
+	if _, err := m.Spawn(ctx, manager.SpawnOptions{Repo: "g"}); err == nil || !strings.Contains(err.Error(), "git worktree add") {
 		t.Errorf("spawn on a git repo: %v", err)
 	}
 	if _, _, err := m.AddDir(ctx, "g", src, repo.DirOptions{}); err == nil || !strings.Contains(err.Error(), "--from-dir") {

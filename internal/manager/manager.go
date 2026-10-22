@@ -108,7 +108,7 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (*session.Sessio
 		return nil, err
 	}
 	if r.IsGit() {
-		return nil, fmt.Errorf("repo %q is a git repository; spawn it with git spawn", r.Name)
+		return nil, fmt.Errorf("repo %q is a git repository; spawn it with git worktree add", r.Name)
 	}
 	b, err := backend.Get(orDefault(opts.Backend, backend.Default))
 	if err != nil {

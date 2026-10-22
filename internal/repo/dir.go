@@ -70,7 +70,7 @@ func AddDir(ctx context.Context, home, name, src string, opts DirOptions) (*Repo
 			return nil, "", err
 		}
 		if r.IsGit() {
-			return nil, "", fmt.Errorf("repo %q is a git repository; snapshot a checkout of it with git spawn --from-dir", name)
+			return nil, "", fmt.Errorf("repo %q is a git repository; snapshot a checkout of it with git worktree add --from-dir", name)
 		}
 		if len(opts.SharedPaths) > 0 {
 			return nil, "", fmt.Errorf("repo %q is already registered; change its shared paths with share and unshare", name)

@@ -323,7 +323,7 @@ func pinInto(ctx context.Context, gitdir, mirror, id, label string) error {
 	// Only objects the mirror actually has, with everything they reach, can
 	// be pinned: a ref to an incomplete object makes every later gc in the
 	// mirror fail. Whatever is missing was gone before pinning; fsck in
-	// git check reports it.
+	// git fsck reports it.
 	type ref struct{ sha, name string }
 	var want []ref
 	for _, line := range strings.Split(refs, "\n") {

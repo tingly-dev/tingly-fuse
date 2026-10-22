@@ -53,7 +53,7 @@ func setup(t *testing.T) (*manager.Manager, string) {
 	git(t, tmp, "clone", "--quiet", "--bare", src, upstream)
 
 	m := manager.New(filepath.Join(tmp, "home"))
-	if _, err := m.Git().Add(context.Background(), "demo", upstream, repo.AddOptions{}); err != nil {
+	if _, err := m.Git().Clone(context.Background(), upstream, "demo", repo.AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	// Drop leftover sessions so their holders do not outlive the test.
@@ -104,11 +104,11 @@ func TestSamePathIsolatedViews(t *testing.T) {
 	m, upstream := setup(t)
 	ctx := context.Background()
 
-	a, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "a", Backend: "overlay"})
+	a, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a", Backend: "overlay"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: "b", Backend: "overlay"})
+	b, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "b", Backend: "overlay"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func background(m *manager.Manager, id string, argv ...string) func() (string, e
 
 func TestConcurrentExecSharesOneMount(t *testing.T) {
 	m, _ := setup(t)
-	if _, err := m.Git().Spawn(context.Background(), manager.GitSpawnOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
+	if _, err := m.Git().AddWorktree(context.Background(), manager.WorktreeOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
 		t.Fatal(err)
 	}
 	const wait = `i=0; while [ ! -f "$1" ]; do sleep 0.02; i=$((i+1)); [ $i -lt 500 ] || exit 3; done`
@@ -270,7 +270,7 @@ func TestConcurrentExecSharesOneMount(t *testing.T) {
 
 func TestHolderRecovery(t *testing.T) {
 	m, _ := setup(t)
-	if _, err := m.Git().Spawn(context.Background(), manager.GitSpawnOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
+	if _, err := m.Git().AddWorktree(context.Background(), manager.WorktreeOptions{Repo: "demo", ID: "s", Backend: "overlay"}); err != nil {
 		t.Fatal(err)
 	}
 	execIn(t, m, "s", "sh", "-c", "echo kept > X")

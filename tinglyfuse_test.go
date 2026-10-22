@@ -68,7 +68,7 @@ func testAPI(t *testing.T, backend string) {
 			m.Drop(ctx, s.ID)
 		}
 	})
-	r, err := m.Git().Add(ctx, "demo", upstream, tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{"cache", "out"}})
+	r, err := m.Git().Clone(ctx, upstream, "demo", tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{"cache", "out"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func testAPI(t *testing.T, backend string) {
 
 	var sessions []*tinglyfuse.Session
 	for _, id := range []string{"a", "b"} {
-		s, err := m.Git().Spawn(ctx, tinglyfuse.GitSpawnOptions{Repo: "demo", ID: id, Backend: backend, Share: []string{"tmp"}})
+		s, err := m.Git().AddWorktree(ctx, tinglyfuse.WorktreeOptions{Repo: "demo", ID: id, Backend: backend, Share: []string{"tmp"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -108,11 +108,14 @@ func testAPI(t *testing.T, backend string) {
 	if got := git(t, upstream, "log", "-1", "--format=%s", "agent/a"); got != "from-a" {
 		t.Errorf("upstream agent/a = %q", got)
 	}
+	if wts, err := m.Git().Worktrees("demo"); err != nil || len(wts) != 2 {
+		t.Errorf("Worktrees = %v, %v", wts, err)
+	}
 	bases, err := m.Bases(ctx, "demo")
 	if err != nil || len(bases) != 1 || len(bases[0].Sessions) != 2 {
 		t.Errorf("Bases = %+v, %v", bases, err)
 	}
-	health, err := m.Git().Check(ctx, "demo", false)
+	health, err := m.Git().Fsck(ctx, "demo", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +125,7 @@ func testAPI(t *testing.T, backend string) {
 		}
 	}
 	for _, s := range sessions {
-		if err := m.Drop(ctx, s.ID); err != nil {
+		if err := m.Git().RemoveWorktree(ctx, s.ID); err != nil {
 			t.Fatal(err)
 		}
 	}

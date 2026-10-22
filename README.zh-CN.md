@@ -41,14 +41,14 @@ tingly-fuse 把能共享的和必须私有的分开：
           └────────── git push 到 upstream ───┘  →  在远端通过 PR 合并
 ```
 
-1. `git add` 登记一个 upstream，并镜像一次。
-2. `git spawn` 确保所选 commit 的只读基础 checkout 存在，在其上建出会话视图和分支 `agent/<id>`。
+1. `git clone` 登记一个 upstream，并镜像一次。
+2. `git worktree add` 确保所选 commit 的只读基础 checkout 存在，在其上建出会话视图和分支 `agent/<id>`。
 3. `exec` 在这个视图里运行命令（你的 agent、shell、构建）。
 4. `git push` 把会话分支推到真实的 upstream；`drop` 丢弃会话。
 
 普通目录跳过 Git 这几步：`base add` 把它快照成 base，`spawn` 在这份快照上建视图。
 
-tingly-fuse 不负责准备环境（装依赖、构建）。先在普通 checkout 里准备好，再用 `git spawn --from-dir` 交给它（见下文）。
+tingly-fuse 不负责准备环境（装依赖、构建）。先在普通 checkout 里准备好，再用 `git worktree add --from-dir` 交给它（见下文）。
 
 ## 环境要求
 
@@ -79,10 +79,10 @@ sudo mkdir -p /workspace && sudo chown "$USER" /workspace
 
 ```sh
 # 1. 登记仓库（镜像一次）
-tingly-fuse git add tingly-box https://github.com/tingly-dev/tingly-box
+tingly-fuse git clone https://github.com/tingly-dev/tingly-box
 
 # 2. 从某个 commit 开一个会话。stdout 打印会话 id，视图路径和分支打印在 stderr
-id=$(tingly-fuse git spawn tingly-box --from main)
+id=$(tingly-fuse git worktree add tingly-box main)
 
 # 3. 在会话视图里运行 agent
 tingly-fuse exec "$id" -- claude
@@ -98,7 +98,7 @@ tingly-fuse drop "$id"
 
 ```sh
 for task in fix-login add-tests update-docs; do
-  id=$(tingly-fuse git spawn tingly-box --from main --branch "agent/$task")
+  id=$(tingly-fuse git worktree add tingly-box main -b "agent/$task")
   tingly-fuse exec "$id" -- claude -p "$(cat tasks/$task.md)" &
 done
 wait
@@ -112,9 +112,9 @@ tingly-fuse list
 ```sh
 cd ~/src/tingly-box && pnpm install && go build ./...    # 你自己的准备步骤，在 tingly-fuse 之外
 
-id=$(tingly-fuse git spawn tingly-box --from-dir ~/src/tingly-box)
+id=$(tingly-fuse git worktree add tingly-box --from-dir ~/src/tingly-box)
 tingly-fuse list                                         # BASE 列显示新 base 的 id：dir-…
-tingly-fuse git spawn tingly-box --base dir-…            # 之后的会话复用这份快照，不再复制
+tingly-fuse git worktree add tingly-box --base dir-…     # 之后的会话复用这份快照，不再复制
 ```
 
 - 快照用 reflink 复制，包括 `node_modules` 等被忽略的文件。之后源目录怎么改都不影响已有会话。
@@ -144,21 +144,22 @@ tingly-fuse base add data ~/datasets/eval                # 再拍一个快照，
 | `base add <name> <dir> [--share path]...` | 把 `dir` 快照成 `name` 新会话的起点；第一次运行时登记 `name`（`--share` 只能在这时给）。打印快照 id |
 | `spawn <name> [--base id] [--id id] [--backend name] [--share path]...` | 从最新快照（或 `--base` 指定的 base）新建会话并打印 id |
 
-Git 仓库（[ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)）：
+Git 仓库。每个子命令都以对应的 git 命令命名，参数顺序也一样，会话就是一个 worktree（[ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)）：
 
-| 命令 | 做什么 |
-|---|---|
-| `git add <name> <upstream> [--shared-git] [--share path]...` | 登记仓库并建共享镜像；`--share` 同时设置共享路径（可重复，也可逗号分隔，与 `share` 相同）；`--shared-git` 让所有会话成为同一个共享仓库的 worktree，分支和提交彼此立即可见（[ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)） |
-| `git spawn <name> [flags]` | 新建会话（带自己的分支）并打印 id |
-| `git push <session> [--remote r]` | 推送会话分支（默认 remote 是 `origin`，即真实 upstream） |
-| `git fetch <name>` | 从 upstream 更新镜像 |
-| `git check <name> [--fix]` | 检查每个 base 是否已固定（不会被 gc 清掉）、对象是否齐全；`--fix` 为旧 base 补上固定 |
+| 命令 | 对应 | 做什么 |
+|---|---|---|
+| `git clone <upstream> [<name>] [--shared-git] [--share path]...` | `git clone` | 登记仓库并建共享镜像；不给名字时取 `upstream` 的最后一段，和 `git clone` 给目录起名一样；`--share` 同时设置共享路径（可重复，也可逗号分隔，与 `share` 相同）；`--shared-git` 让所有会话成为同一个共享仓库的 worktree，分支和提交彼此立即可见（[ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)） |
+| `git worktree add <name> [<commit-ish>] [flags]` | `git worktree add` | 新建会话（带自己的分支）并打印 id |
+| `git worktree list [<name>]` | `git worktree list` | 列出 Git 仓库的会话 |
+| `git worktree remove <session>` | `git worktree remove` | 删除会话，未推送的工作会丢失 |
+| `git push <session> [<remote>]` | `git push` | 推送会话分支（默认 remote 是 `origin`，即真实 upstream） |
+| `git fetch <name>` | `git fetch` | 从 upstream 更新镜像 |
+| `git fsck <name> [--fix]` | `git fsck` | 检查每个 base 是否已固定（不会被 gc 清掉）、对象是否齐全；`--fix` 为旧 base 补上固定 |
 
 两种都适用：
 
 | 命令 | 做什么 |
 |---|---|
-
 | `exec <session> -- <cmd> [args...]` | 在会话视图里运行命令 |
 | `drop <session>` | 删除会话和它的视图 |
 | `list` | 列出会话：仓库、分支、base、后端、视图路径 |
@@ -168,17 +169,17 @@ Git 仓库（[ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.
 | `base prune <name> [--dry-run]` | 删除所有没有会话在用的 base，比如旧的快照 |
 | `remove <name> [--force]` | 删除仓库和它所有的 base（以及镜像）；`--force` 先 drop 它的会话 |
 
-拆分之前的命令（`repo add`、`repo fetch`、`repo check`、`push`、`repo share` 等）现在会报错，并给出新的写法。
+拆分之前的命令（`repo add`、`spawn`、`push`、`repo check`、`repo share` 等）现在会报错，并给出新的写法。
 
-`git spawn` 的参数：
+`git worktree add` 的参数（和 git 一样，选项可以放在位置参数前面或后面）：
 
 | 参数 | 含义 |
 |---|---|
-| `--from <rev>` | 起始 revision（默认 upstream 的 `HEAD`）。除完整 commit id 外都会先 fetch，所以 `main` 指的是 upstream 现在的 main |
-| `--no-fetch` | 直接用镜像里现有的内容解析 `--from`（离线，或想继续用已有的 commit） |
-| `--from-dir <dir>` | 把准备好的 checkout 快照成 base |
-| `--base <id>` | 复用已有 base（id 即 `git spawn` 打印的 `base:`，或 `list` 的 BASE 列） |
-| `--branch <name>` | 要创建的分支（默认 `agent/<id>`） |
+| `<commit-ish>` | 从哪里开始（默认 upstream 的 `HEAD`）。除完整 commit id 外都会先 fetch，所以 `main` 指的是 upstream 现在的 main |
+| `-b <branch>` | 要创建的分支（默认 `agent/<id>`） |
+| `--no-fetch` | 直接用镜像里现有的内容解析 commit-ish（离线，或想继续用已有的 commit） |
+| `--from-dir <dir>` | 把准备好的 checkout 快照成 base，代替 commit |
+| `--base <id>` | 复用已有 base（id 即 `git worktree add` 打印的 `base:`，或 `list` 的 BASE 列） |
 | `--id <id>` | 会话 id（默认随机） |
 | `--backend <name>` | `overlay`、`clone` 或 `copy`（默认值取决于平台） |
 | `--share <path>` | 在仓库的共享路径之外，再和其他带同一路径 spawn 的会话共享这个路径（可重复，也可逗号分隔） |
@@ -199,9 +200,9 @@ m.AddDir(ctx, "data", "/srv/data", tinglyfuse.DirOptions{SharedPaths: []string{"
 s, _ := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "data"})
 
 // Git 仓库：m.Git()
-m.Git().Add(ctx, "box", "https://github.com/tingly-dev/tingly-box",
+m.Git().Clone(ctx, "https://github.com/tingly-dev/tingly-box", "box",
 	tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{".cache"}})
-s, _ = m.Git().Spawn(ctx, tinglyfuse.GitSpawnOptions{Repo: "box", Share: []string{"tmp"}})
+s, _ = m.Git().AddWorktree(ctx, tinglyfuse.WorktreeOptions{Repo: "box", Commit: "main", Share: []string{"tmp"}})
 m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
 m.Git().Push(ctx, s.ID, "", os.Stdout, os.Stderr)
 m.Drop(ctx, s.ID)

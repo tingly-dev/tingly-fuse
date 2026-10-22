@@ -6,11 +6,13 @@
 //	tingly-fuse base add <name> <dir> [--share path]...
 //	tingly-fuse spawn <name> [--base id] [--id id] [--backend name] [--share path]...
 //
-// Git repositories:
+// Git repositories, named after the git commands they correspond to:
 //
-//	tingly-fuse git add <name> <upstream> [--shared-git] [--share path]...
-//	tingly-fuse git spawn <name> [--from rev | --from-dir dir | --base id] [--branch b] [...]
-//	tingly-fuse git push <session> [--remote origin]
+//	tingly-fuse git clone <upstream> [<name>] [--shared-git] [--share path]...
+//	tingly-fuse git worktree add <name> [<commit-ish>] [-b branch] [--from-dir dir | --base id] [...]
+//	tingly-fuse git worktree list [<name>] / remove <session>
+//	tingly-fuse git push <session> [<remote>]
+//	tingly-fuse git fetch <name> / fsck <name> [--fix]
 //
 // Either:
 //
@@ -41,13 +43,21 @@ any directory:
                                            share that path, repeatable)
   tingly-fuse spawn <name> [flags]         create a session and print its id
 
-git repositories:
-  tingly-fuse git add <name> <upstream>    register a repository (--shared-git: sessions share
-                                           branches, commits and config; --share path: as above)
-  tingly-fuse git spawn <name> [flags]     create a session on its own branch and print its id
-  tingly-fuse git push <session> [flags]   push the session's branch
+git repositories (named after the git commands they correspond to):
+  tingly-fuse git clone <upstream> [<name>]
+                                           register a repository and mirror it; name defaults to
+                                           the last part of upstream, as git clone (--shared-git:
+                                           sessions share branches, commits and config; --share
+                                           path: as above)
+  tingly-fuse git worktree add <name> [<commit-ish>]
+                                           create a session on its own branch (-b branch, default
+                                           agent/<id>) and print its id; --from-dir dir or --base id
+                                           start from a prepared directory or an existing base
+  tingly-fuse git worktree list [<name>]   list the sessions of git repositories
+  tingly-fuse git worktree remove <session> delete a session (unpushed work is lost)
+  tingly-fuse git push <session> [<remote>] push the session's branch (default remote: origin)
   tingly-fuse git fetch <name>             update the repository's mirror from upstream
-  tingly-fuse git check <name> [--fix]     verify every base is pinned and has all its objects
+  tingly-fuse git fsck <name> [--fix]      verify every base is pinned and has all its objects
 
 either:
   tingly-fuse exec <session> -- <cmd>...   run a command inside a session's view
@@ -124,7 +134,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return m.RemoveRepo(ctx, args[0], *force)
 	case "repo", "push":
-		return fmt.Errorf("%s moved (ADR 0013): repo add, repo fetch, repo check and push are now git add, git fetch, git check and git push; repo share, unshare, remove and list are share, unshare, remove and base list", cmd)
+		return fmt.Errorf("%s moved (ADR 0013): repo add, spawn, push, repo fetch and repo check are now git clone, git worktree add, git push, git fetch and git fsck; repo share, unshare, remove and list are share, unshare, remove and base list", cmd)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil
@@ -134,53 +144,121 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 
+// The git subcommands are named after the git commands they correspond
+// to, with the same argument order (ADR 0013).
 func runGit(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
-	const usage = "usage: tingly-fuse git add <name> <upstream> [--shared-git] [--share path]... | git spawn <name> [flags] | git push <session> [--remote r] | git fetch <name> | git check <name> [--fix]"
+	const usage = "usage: tingly-fuse git clone <upstream> [<name>] | git worktree add|list|remove ... | git push <session> [<remote>] | git fetch <name> | git fsck <name> [--fix]"
 	g := m.Git()
-	switch {
-	case len(args) >= 3 && args[0] == "add":
-		fs := flag.NewFlagSet("git add", flag.ContinueOnError)
+	if len(args) == 0 {
+		return errors.New(usage)
+	}
+	cmd, args := args[0], args[1:]
+	switch cmd {
+	case "clone":
+		const usage = "usage: tingly-fuse git clone <upstream> [<name>] [--shared-git] [--share path]..."
+		fs := flag.NewFlagSet("git clone", flag.ContinueOnError)
 		shared := fs.Bool("shared-git", false, "make every session a worktree of one shared repository: branches, commits and config are visible to all sessions")
 		var shares listFlag
 		fs.Var(&shares, "share", "path every session shares (repeatable, or comma-separated)")
-		if err := fs.Parse(args[3:]); err != nil {
+		pos, err := parseInterspersed(fs, args)
+		if err != nil {
 			return err
 		}
-		if fs.NArg() != 0 {
-			return fmt.Errorf("usage: tingly-fuse git add <name> <upstream> [--shared-git] [--share path]...")
+		if len(pos) < 1 || len(pos) > 2 {
+			return errors.New(usage)
 		}
-		r, err := g.Add(ctx, args[1], args[2], tinglyfuse.AddOptions{SharedGit: *shared, SharedPaths: shares})
+		name := ""
+		if len(pos) == 2 {
+			name = pos[1]
+		}
+		r, err := g.Clone(ctx, pos[0], name, tinglyfuse.AddOptions{SharedGit: *shared, SharedPaths: shares})
 		if err != nil {
 			return err
 		}
 		fmt.Println(r.Name)
 		return nil
-	case len(args) >= 1 && args[0] == "spawn":
-		return runGitSpawn(ctx, g, args[1:])
-	case len(args) >= 1 && args[0] == "push":
-		fs := flag.NewFlagSet("git push", flag.ContinueOnError)
-		remote := fs.String("remote", "origin", "remote to push to")
-		if len(args) < 2 {
-			return fmt.Errorf("usage: tingly-fuse git push <session> [--remote r]")
+	case "worktree":
+		return runGitWorktree(ctx, g, args)
+	case "push":
+		if len(args) < 1 || len(args) > 2 {
+			return fmt.Errorf("usage: tingly-fuse git push <session> [<remote>]")
 		}
-		if err := fs.Parse(args[2:]); err != nil {
-			return err
+		remote := ""
+		if len(args) == 2 {
+			remote = args[1]
 		}
-		return g.Push(ctx, args[1], *remote, os.Stdout, os.Stderr)
-	case len(args) == 2 && args[0] == "fetch":
-		return g.Fetch(ctx, args[1])
-	case len(args) >= 2 && args[0] == "check":
-		fs := flag.NewFlagSet("git check", flag.ContinueOnError)
+		return g.Push(ctx, args[0], remote, os.Stdout, os.Stderr)
+	case "fetch":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: tingly-fuse git fetch <name>")
+		}
+		return g.Fetch(ctx, args[0])
+	case "fsck":
+		fs := flag.NewFlagSet("git fsck", flag.ContinueOnError)
 		fix := fs.Bool("fix", false, "pin bases that are not pinned yet")
-		if err := fs.Parse(args[2:]); err != nil {
+		pos, err := parseInterspersed(fs, args)
+		if err != nil {
 			return err
 		}
-		if fs.NArg() != 0 {
-			return fmt.Errorf("usage: tingly-fuse git check <name> [--fix]")
+		if len(pos) != 1 {
+			return fmt.Errorf("usage: tingly-fuse git fsck <name> [--fix]")
 		}
-		return runGitCheck(ctx, g, args[1], *fix)
+		return runGitFsck(ctx, g, pos[0], *fix)
+	case "add", "spawn", "check":
+		return fmt.Errorf("git %s is now %s (named after the git command)", cmd, map[string]string{"add": "git clone <upstream> [<name>]", "spawn": "git worktree add <name> [<commit-ish>]", "check": "git fsck <name>"}[cmd])
 	default:
 		return errors.New(usage)
+	}
+}
+
+func runGitWorktree(ctx context.Context, g *tinglyfuse.Git, args []string) error {
+	const usage = "usage: tingly-fuse git worktree add <name> [<commit-ish>] [flags] | git worktree list [<name>] | git worktree remove <session>"
+	if len(args) == 0 {
+		return errors.New(usage)
+	}
+	switch args[0] {
+	case "add":
+		return runGitWorktreeAdd(ctx, g, args[1:])
+	case "list":
+		if len(args) > 2 {
+			return fmt.Errorf("usage: tingly-fuse git worktree list [<name>]")
+		}
+		name := ""
+		if len(args) == 2 {
+			name = args[1]
+		}
+		sessions, err := g.Worktrees(name)
+		if err != nil {
+			return err
+		}
+		return printSessions(sessions)
+	case "remove":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: tingly-fuse git worktree remove <session>")
+		}
+		return g.RemoveWorktree(ctx, args[1])
+	default:
+		return errors.New(usage)
+	}
+}
+
+// parseInterspersed parses fs from args with flags allowed before, between
+// and after positional arguments, as git does, and returns the positional
+// ones. "--" ends the flags.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if used := len(args) - len(rest); used > 0 && args[used-1] == "--" {
+			return append(pos, rest...), nil
+		}
+		if len(rest) == 0 {
+			return pos, nil
+		}
+		pos, args = append(pos, rest[0]), rest[1:]
 	}
 }
 
@@ -312,8 +390,8 @@ func runBase(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 	}
 }
 
-func runGitCheck(ctx context.Context, g *tinglyfuse.Git, name string, fix bool) error {
-	bases, err := g.Check(ctx, name, fix)
+func runGitFsck(ctx context.Context, g *tinglyfuse.Git, name string, fix bool) error {
+	bases, err := g.Fsck(ctx, name, fix)
 	if err != nil {
 		return err
 	}
@@ -373,28 +451,29 @@ func runSpawn(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 	return nil
 }
 
-func runGitSpawn(ctx context.Context, g *tinglyfuse.Git, args []string) error {
-	fs := flag.NewFlagSet("git spawn", flag.ContinueOnError)
-	var opts tinglyfuse.GitSpawnOptions
-	fs.StringVar(&opts.From, "from", "", "revision to start from (default: upstream HEAD)")
-	fs.StringVar(&opts.FromDir, "from-dir", "", "snapshot this prepared checkout (dependencies installed, built) as the base")
+func runGitWorktreeAdd(ctx context.Context, g *tinglyfuse.Git, args []string) error {
+	const usage = "usage: tingly-fuse git worktree add <name> [<commit-ish>] [-b branch] [--from-dir dir | --base id] [flags]"
+	fs := flag.NewFlagSet("git worktree add", flag.ContinueOnError)
+	var opts tinglyfuse.WorktreeOptions
+	fs.StringVar(&opts.Branch, "b", "", "branch to create (default: agent/<id>)")
+	fs.StringVar(&opts.FromDir, "from-dir", "", "snapshot this prepared checkout (dependencies installed, built) as the base, instead of a commit")
 	fs.StringVar(&opts.Base, "base", "", "reuse an existing base by id (see base list <name>), e.g. one made by --from-dir")
-	fs.BoolVar(&opts.NoFetch, "no-fetch", false, "resolve --from against the local mirror without fetching first")
+	fs.BoolVar(&opts.NoFetch, "no-fetch", false, "resolve the commit-ish against the local mirror without fetching first")
 	fs.StringVar(&opts.ID, "id", "", "session id (default: random)")
-	fs.StringVar(&opts.Branch, "branch", "", "branch to create (default: agent/<id>)")
 	backendFlag(fs, &opts.Backend)
 	fs.Var((*listFlag)(&opts.Share), "share", "also share this path with other sessions sharing it (repeatable, or comma-separated)")
-	if len(args) == 0 {
-		return fmt.Errorf("usage: tingly-fuse git spawn <name> [flags]")
-	}
-	opts.Repo = args[0]
-	if err := fs.Parse(args[1:]); err != nil {
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("usage: tingly-fuse git spawn <name> [flags]")
+	if len(pos) < 1 || len(pos) > 2 {
+		return errors.New(usage)
 	}
-	sess, err := g.Spawn(ctx, opts)
+	opts.Repo = pos[0]
+	if len(pos) == 2 {
+		opts.Commit = pos[1]
+	}
+	sess, err := g.AddWorktree(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -418,6 +497,10 @@ func runList(m *tinglyfuse.Manager) error {
 	if err != nil {
 		return err
 	}
+	return printSessions(sessions)
+}
+
+func printSessions(sessions []*tinglyfuse.Session) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tREPO\tBRANCH\tBASE\tBACKEND\tVIEW")
 	for _, s := range sessions {

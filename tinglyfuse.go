@@ -12,12 +12,13 @@
 //	m.Exec(ctx, s.ID, []string{"make"}, nil, os.Stdout, os.Stderr)
 //	m.Drop(ctx, s.ID)
 //
-// The git layer, m.Git(), adds an upstream mirror, bases at commits,
-// a branch per session to push, and shared .git:
+// The git layer, m.Git(), named after the git commands it mirrors, adds an
+// upstream mirror, bases at commits, a branch per session to push, and
+// shared .git:
 //
-//	m.Git().Add(ctx, "box", "https://github.com/tingly-dev/tingly-box",
+//	m.Git().Clone(ctx, "https://github.com/tingly-dev/tingly-box", "box",
 //		tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{"node_modules/.cache"}})
-//	s, _ := m.Git().Spawn(ctx, tinglyfuse.GitSpawnOptions{Repo: "box", Share: []string{".env"}})
+//	s, _ := m.Git().AddWorktree(ctx, tinglyfuse.WorktreeOptions{Repo: "box", Share: []string{".env"}})
 //	m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
 //	m.Git().Push(ctx, s.ID, "", os.Stdout, os.Stderr)
 //	m.Drop(ctx, s.ID)
@@ -50,9 +51,9 @@ type (
 	// SpawnOptions say which snapshot a session of a dir repository starts
 	// from and what it shares.
 	SpawnOptions = manager.SpawnOptions
-	// GitSpawnOptions say where a session of a git repository starts, its
+	// WorktreeOptions say where a session of a git repository starts, its
 	// branch and what it shares.
-	GitSpawnOptions = manager.GitSpawnOptions
+	WorktreeOptions = manager.WorktreeOptions
 	// DirOptions are the settings a dir repository is registered with.
 	DirOptions = repo.DirOptions
 	// AddOptions are the settings a git repository is registered with.

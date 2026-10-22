@@ -41,14 +41,14 @@ On Linux, every session sees the repository at **the same path** (`/workspace/<r
           └──────── git push to upstream ─────┘  →  merge via PR on the remote
 ```
 
-1. `git add` registers an upstream and mirrors it once.
-2. `git spawn` makes sure a read-only base checkout exists for the chosen commit, then creates a session view on top of it and a branch `agent/<id>`.
+1. `git clone` registers an upstream and mirrors it once.
+2. `git worktree add` makes sure a read-only base checkout exists for the chosen commit, then creates a session view on top of it and a branch `agent/<id>`.
 3. `exec` runs a command (your agent, a shell, a build) inside that view.
 4. `git push` pushes the session's branch to the real upstream. `drop` throws the session away.
 
 A plain directory skips the git steps: `base add` snapshots it as the base, and `spawn` creates views of that snapshot.
 
-tingly-fuse does not prepare environments (installing dependencies, building). Do that first in a normal checkout, then hand it over with `git spawn --from-dir` (see below).
+tingly-fuse does not prepare environments (installing dependencies, building). Do that first in a normal checkout, then hand it over with `git worktree add --from-dir` (see below).
 
 ## Requirements
 
@@ -79,10 +79,10 @@ Or point it somewhere you already own with `TINGLY_FUSE_VIEW_ROOT=/path/to/views
 
 ```sh
 # 1. Register a repository (mirrors it once).
-tingly-fuse git add tingly-box https://github.com/tingly-dev/tingly-box
+tingly-fuse git clone https://github.com/tingly-dev/tingly-box
 
 # 2. Start a session from a commit. Prints the session id; view path and branch go to stderr.
-id=$(tingly-fuse git spawn tingly-box --from main)
+id=$(tingly-fuse git worktree add tingly-box main)
 
 # 3. Run your agent inside the session's view.
 tingly-fuse exec "$id" -- claude
@@ -98,7 +98,7 @@ Run as many sessions in parallel as you like. They all start from the same base 
 
 ```sh
 for task in fix-login add-tests update-docs; do
-  id=$(tingly-fuse git spawn tingly-box --from main --branch "agent/$task")
+  id=$(tingly-fuse git worktree add tingly-box main -b "agent/$task")
   tingly-fuse exec "$id" -- claude -p "$(cat tasks/$task.md)" &
 done
 wait
@@ -112,9 +112,9 @@ If your project needs installed dependencies or build output, prepare a normal c
 ```sh
 cd ~/src/tingly-box && pnpm install && go build ./...    # your own setup, outside tingly-fuse
 
-id=$(tingly-fuse git spawn tingly-box --from-dir ~/src/tingly-box)
+id=$(tingly-fuse git worktree add tingly-box --from-dir ~/src/tingly-box)
 tingly-fuse list                                         # BASE column shows the new base id: dir-…
-tingly-fuse git spawn tingly-box --base dir-…            # more sessions reuse that snapshot, no new copy
+tingly-fuse git worktree add tingly-box --base dir-…     # more sessions reuse that snapshot, no new copy
 ```
 
 - The snapshot is a reflink copy, ignored files such as `node_modules` included. Later changes to the source directory do not affect existing sessions.
@@ -144,21 +144,22 @@ Any directory:
 | `base add <name> <dir> [--share path]...` | Snapshot `dir` as the base new sessions of `name` start from, registering `name` the first time (`--share` only then). Prints the snapshot id |
 | `spawn <name> [--base id] [--id id] [--backend name] [--share path]...` | Create a session from the latest snapshot, or from `--base`, and print its id |
 
-Git repositories ([ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)):
+Git repositories. Each subcommand is named after the git command it corresponds to and takes its arguments in the same order, so a session is a worktree ([ADR 0013](.design/decisions/0013-generic-layer-and-git-subcommand.md)):
 
-| Command | What it does |
-|---|---|
-| `git add <name> <upstream> [--shared-git] [--share path]...` | Register a repository and create its shared mirror; `--share` sets shared paths right away (repeatable or comma-separated, same as `share`); `--shared-git` makes every session a worktree of one shared repository, so branches and commits are visible to all sessions ([ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)) |
-| `git spawn <name> [flags]` | Create a session on its own branch and print its id |
-| `git push <session> [--remote r]` | Push the session's branch (default remote `origin`, which is the real upstream) |
-| `git fetch <name>` | Update the mirror from upstream |
-| `git check <name> [--fix]` | Check that every base is pinned against gc and still has all its objects; `--fix` pins old bases |
+| Command | Like | What it does |
+|---|---|---|
+| `git clone <upstream> [<name>] [--shared-git] [--share path]...` | `git clone` | Register a repository and create its shared mirror; the name defaults to the last part of `upstream`, as `git clone` names its directory; `--share` sets shared paths right away (repeatable or comma-separated, same as `share`); `--shared-git` makes every session a worktree of one shared repository, so branches and commits are visible to all sessions ([ADR 0010](.design/decisions/0010-shared-git-via-registered-worktrees.md)) |
+| `git worktree add <name> [<commit-ish>] [flags]` | `git worktree add` | Create a session on its own branch and print its id |
+| `git worktree list [<name>]` | `git worktree list` | List the sessions of git repositories |
+| `git worktree remove <session>` | `git worktree remove` | Delete a session; unpushed work is lost |
+| `git push <session> [<remote>]` | `git push` | Push the session's branch (default remote `origin`, which is the real upstream) |
+| `git fetch <name>` | `git fetch` | Update the mirror from upstream |
+| `git fsck <name> [--fix]` | `git fsck` | Check that every base is pinned against gc and still has all its objects; `--fix` pins old bases |
 
 Either kind:
 
 | Command | What it does |
 |---|---|
-
 | `exec <session> -- <cmd> [args...]` | Run a command inside the session's view |
 | `drop <session>` | Delete the session and its view |
 | `list` | List sessions with repo, branch, base, backend and view path |
@@ -168,17 +169,17 @@ Either kind:
 | `base prune <name> [--dry-run]` | Delete every base no session uses, such as old snapshots |
 | `remove <name> [--force]` | Delete the repository with all its bases (and mirror); `--force` drops its sessions first |
 
-The commands before this split (`repo add`, `repo fetch`, `repo check`, `push`, `repo share`, …) now fail with a message naming their new form.
+The commands before this split (`repo add`, `spawn`, `push`, `repo check`, `repo share`, …) now fail with a message naming their new form.
 
-`git spawn` flags:
+`git worktree add` arguments (flags may come before or after the positional ones, as in git):
 
-| Flag | Meaning |
+| Argument | Meaning |
 |---|---|
-| `--from <rev>` | Revision to start from (default: upstream `HEAD`). Anything but a full commit id is fetched first, so `main` means upstream's main now |
-| `--no-fetch` | Resolve `--from` against the mirror as it is (offline, or to keep using the commit already there) |
-| `--from-dir <dir>` | Snapshot a prepared checkout as the base |
-| `--base <id>` | Reuse an existing base (the id `git spawn` prints as `base:`, or the BASE column of `list`) |
-| `--branch <name>` | Branch to create (default `agent/<id>`) |
+| `<commit-ish>` | Where to start (default: upstream `HEAD`). Anything but a full commit id is fetched first, so `main` means upstream's main now |
+| `-b <branch>` | Branch to create (default `agent/<id>`) |
+| `--no-fetch` | Resolve the commit-ish against the mirror as it is (offline, or to keep using the commit already there) |
+| `--from-dir <dir>` | Snapshot a prepared checkout as the base, instead of a commit |
+| `--base <id>` | Reuse an existing base (the id `git worktree add` prints as `base:`, or the BASE column of `list`) |
 | `--id <id>` | Session id (default: random) |
 | `--backend <name>` | `overlay`, `clone` or `copy` (default depends on the platform) |
 | `--share <path>` | Also share this path, on top of the repository's shared paths, with every other session spawned with it (repeatable or comma-separated) |
@@ -199,9 +200,9 @@ m.AddDir(ctx, "data", "/srv/data", tinglyfuse.DirOptions{SharedPaths: []string{"
 s, _ := m.Spawn(ctx, tinglyfuse.SpawnOptions{Repo: "data"})
 
 // Git repositories: m.Git().
-m.Git().Add(ctx, "box", "https://github.com/tingly-dev/tingly-box",
+m.Git().Clone(ctx, "https://github.com/tingly-dev/tingly-box", "box",
 	tinglyfuse.AddOptions{SharedGit: true, SharedPaths: []string{".cache"}})
-s, _ = m.Git().Spawn(ctx, tinglyfuse.GitSpawnOptions{Repo: "box", Share: []string{"tmp"}})
+s, _ = m.Git().AddWorktree(ctx, tinglyfuse.WorktreeOptions{Repo: "box", Commit: "main", Share: []string{"tmp"}})
 m.Exec(ctx, s.ID, []string{"go", "test", "./..."}, nil, os.Stdout, os.Stderr)
 m.Git().Push(ctx, s.ID, "", os.Stdout, os.Stderr)
 m.Drop(ctx, s.ID)

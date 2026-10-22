@@ -24,7 +24,7 @@ repos/<name>/modules/<h>.git    子模块的 bare 镜像，按 URL 哈希，跨 
 repos/<name>/shares/<path>      每个共享路径在宿主上的唯一一份（share）
 repos/<name>/shared.git         仅 --shared-git：所有会话共用的 refs、config 和新对象；worktrees/<id>/ 是各会话的 HEAD、index、子模块 gitdir
 repos/<name>/bases/<sha>/       某个 commit 的只读基础 checkout
-repos/<name>/bases/dir-<sha12>-<t>/  由 git spawn --from-dir 从现成目录快照出的基础 checkout
+repos/<name>/bases/dir-<sha12>-<t>/  由 git worktree add --from-dir 从现成目录快照出的基础 checkout
 sessions/<id>/session.json      会话元数据（repo、base、分支、后端、视图路径）
 sessions/<id>/...               后端私有状态（overlay 的 upper/work、holder.json 等）
 ```
@@ -40,14 +40,15 @@ sessions/<id>/...               后端私有状态（overlay 的 upper/work、ho
 | `base add <name> <dir>` | 第一次运行时登记 dir 仓库（`--share` 只在这时可给）；每次都把目录 reflink 快照成新 base 并记为当前快照，内容不做解释 |
 | `spawn <name> [--base id]` | 从当前快照（或指定 base）建视图；不建分支、不碰 Git |
 
-Git 层：
+Git 层，子命令按对应的 git 命令命名，会话就是一个 worktree：
 
 | 命令 | 做什么 |
 |---|---|
-| `git add` | 登记仓库并建镜像（`--shared-git`：会话共享 refs 和新对象，见 [0010](decisions/0010-shared-git-via-registered-worktrees.md)） |
-| `git spawn <name> [--from rev \| --from-dir dir \| --base id]` | `--from-dir`：reflink 快照该目录并把其中对象并入镜像（[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)）；`--base`：复用已有 base；默认：解析 rev 得到 commit（除完整 commit id 外先 fetch，`--no-fetch` 跳过）；固定 base 的对象；确保该 commit 的 base 存在（并发安全，先建临时目录再 rename）；之后和通用层一样建视图，再在视图里接上共享 `.git`、把未跟踪的共享路径写进 `info/exclude`、建分支 `agent/<id>` |
-| `git push <session>` | 在视图里把分支推到真实的 upstream（base 的 origin 指向 upstream，不是本地镜像） |
-| `git fetch` / `git check [--fix]` | 更新镜像；逐个 base 检查是否已固定、`git fsck` 是否通过（`--fix` 给旧 base 补固定）（[0008](decisions/0008-pin-base-objects-in-mirrors.md)） |
+| `git clone <upstream> [<name>]` | 登记仓库并建镜像，名字默认取 URL 最后一段（`--shared-git`：会话共享 refs 和新对象，见 [0010](decisions/0010-shared-git-via-registered-worktrees.md)） |
+| `git worktree add <name> [<commit-ish> \| --from-dir dir \| --base id] [-b branch]` | `--from-dir`：reflink 快照该目录并把其中对象并入镜像（[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)）；`--base`：复用已有 base；默认：解析 commit-ish 得到 commit（除完整 commit id 外先 fetch，`--no-fetch` 跳过）；固定 base 的对象；确保该 commit 的 base 存在（并发安全，先建临时目录再 rename）；之后和通用层一样建视图，再在视图里接上共享 `.git`、把未跟踪的共享路径写进 `info/exclude`、建分支 `agent/<id>` |
+| `git worktree list` / `git worktree remove` | 列出 git 仓库的会话；删除一个 git 会话（同 `drop`） |
+| `git push <session> [<remote>]` | 在视图里把分支推到真实的 upstream（base 的 origin 指向 upstream，不是本地镜像） |
+| `git fetch` / `git fsck [--fix]` | 更新镜像；逐个 base 检查是否已固定、`git fsck` 是否通过（`--fix` 给旧 base 补固定）（[0008](decisions/0008-pin-base-objects-in-mirrors.md)） |
 
 两种仓库都适用：
 
@@ -56,7 +57,7 @@ Git 层：
 | `exec <session> -- cmd...` | 在会话视图里运行命令，注入 `TINGLY_WORKSPACE`、`TINGLY_SESSION`、`TINGLY_REPO` |
 | `drop <session>` | 后端 `Remove` 并删除会话目录，未推送的工作随之丢失（共享 `.git` 时分支和提交留在 shared.git） |
 | `list` | 列出会话 |
-| `share/unshare` | 设置所有新会话共享的目录或文件；不带路径时列出；`git add --share`、`base add --share`、`spawn --share`、`git spawn --share` 可在创建时一并设置（[0011](decisions/0011-shared-paths.md)） |
+| `share/unshare` | 设置所有新会话共享的目录或文件；不带路径时列出；`git clone --share`、`base add --share`、`spawn --share`、`git worktree add --share` 可在创建时一并设置（[0011](decisions/0011-shared-paths.md)） |
 | `base list [name]` / `base rm` / `base prune` | 不带名字时列出仓库；带名字时列出 base 及引用它的会话；删除没有会话引用的 base，连同它在镜像里的固定 ref；dir 仓库的当前快照不删；与 spawn 用 `.bases.lock` 互斥（[0009](decisions/0009-base-removal-by-session-refcount.md)） |
 | `remove [--force]` | 删除仓库（`--force` 先 drop 它的会话） |
 
@@ -83,7 +84,7 @@ Git 层：
 - macOS 没有 mount namespace，做不到同一路径；需要严格一致时的备选是用一个常驻的轻量 Linux 虚拟机，尚未实现。
 - `overlay` 依赖 `nsenter`（util-linux）；非 root 需要 Linux 5.11+ 且允许非特权 user namespace。
 - `clone` 后端已在真实的 Mac 上验证：克隆生效（spawn 0.09 秒、新会话约 2 MB），`go test -race ./...` 通过。注意 `du` 会把克隆和 base 共享的数据块重复计入，要看真实占用只能比较 `df` 前后的差值。
-- pnpm 在 overlay 下无法跨挂载点硬链接，依赖会整份复制；解决办法是让底层本来就带着装好的依赖：环境准备在 tingly-fuse 之前完成，再用 `git spawn --from-dir` 把这个目录当底层（[0004](decisions/0004-environment-prep-out-of-scope.md)、[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)）。`--from-dir` 要求 `.git` 是目录，不支持 worktree。
+- pnpm 在 overlay 下无法跨挂载点硬链接，依赖会整份复制；解决办法是让底层本来就带着装好的依赖：环境准备在 tingly-fuse 之前完成，再用 `git worktree add --from-dir` 把这个目录当底层（[0004](decisions/0004-environment-prep-out-of-scope.md)、[0007](decisions/0007-from-dir-snapshot-and-absorb-objects.md)）。`--from-dir` 要求 `.git` 是目录，不支持 worktree。
 
 ## 尚未实现、仅在调研中的方向
 

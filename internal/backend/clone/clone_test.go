@@ -153,7 +153,7 @@ func TestManagerRoundTrip(t *testing.T) {
 	git(t, tmp, "clone", "--quiet", "--bare", src, upstream)
 
 	m := manager.New(filepath.Join(tmp, "home"))
-	if _, err := m.Git().Add(ctx, "demo", upstream, repo.AddOptions{}); err != nil {
+	if _, err := m.Git().Clone(ctx, upstream, "demo", repo.AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	run := func(id string, argv ...string) string {
@@ -167,7 +167,7 @@ func TestManagerRoundTrip(t *testing.T) {
 
 	views := map[string]bool{}
 	for _, id := range []string{"a", "b"} {
-		sess, err := m.Git().Spawn(ctx, manager.GitSpawnOptions{Repo: "demo", ID: id, Backend: "clone"})
+		sess, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: id, Backend: "clone"})
 		if err != nil {
 			t.Fatal(err)
 		}
