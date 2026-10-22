@@ -33,6 +33,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # fuse-overlayfs is the host-visible overlay backend for non-root users.
+      - name: install fuse-overlayfs
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fuse-overlayfs
       # -count=1: a cached pass would hide which backends actually ran.
       - name: go test
         run: |
@@ -59,7 +63,10 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go build -o /tmp/tingly-fuse ./cmd/tingly-fuse
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq fuse-overlayfs
       - name: copy backend
         run: TF_NEW=/tmp/tingly-fuse BACKEND=copy bench/lifecycle.sh
       - name: overlay backend
         run: sudo -E env PATH="$PATH" TF_NEW=/tmp/tingly-fuse BACKEND=overlay bench/lifecycle.sh
+      - name: fuse-overlay backend
+        run: TF_NEW=/tmp/tingly-fuse BACKEND=fuse-overlay bench/lifecycle.sh

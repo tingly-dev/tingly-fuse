@@ -509,7 +509,11 @@ func testPruneRefusesWithUnreadableSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(m.Home, "sessions", "a", "session.json"), []byte("{truncated"), 0o644)
+	meta := filepath.Join(m.Home, "sessions", "a", "session.json")
+	orig, _ := os.ReadFile(meta)
+	// Put it back at the end so the session can be dropped and unmounted.
+	t.Cleanup(func() { os.WriteFile(meta, orig, 0o644) })
+	os.WriteFile(meta, []byte("{truncated"), 0o644)
 	if pruned, err := m.PruneBases(ctx, "demo", false); err == nil || len(pruned) != 0 {
 		t.Errorf("prune with an unreadable session: pruned %v, err %v", pruned, err)
 	}

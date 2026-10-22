@@ -25,6 +25,7 @@
 | 13. 创建时设置共享、Go API | `repo add --share`、`spawn --share`（可重复）；模块根目录的 `tinglyfuse` 包，命令行只用它（[0011](decisions/0011-shared-paths.md)、[0012](decisions/0012-public-go-api.md)） | `TestAPI` 只用公开包走完 add、share、spawn、exec、push、bases、check、drop、remove，在 copy 和 overlay 上通过（root 和 uid 65534）；`TestSpawnShares`、CLI 测试覆盖两个 `--share`；2026-10-20 真实 tingly-box 上 overlay 端到端：`repo add --shared-git --share .cache,tmp` 加 `spawn --share notes`，三个会话按预期共享、`gc --prune=now` 后 fsck 无错；2026-10-21 PR #9 的 CI 全绿（macOS 上修好 BSD `wc -l` 的测试问题）并合并 | ✅ |
 | 14. 通用层和 `git` 子命令 | 任意目录 `base add` 快照、`spawn`；Git 功能移到按 git 命名的子命令 `git clone`、`git worktree add`、`git fsck`，推送等在会话里直接跑 git；Go API 同样分两层（[0013](decisions/0013-generic-layer-and-git-subcommand.md)） | `dir_test.go`、CLI 测试、`TestAPI` 在 copy 和 overlay 上通过（root 和 uid 65534），关掉当前快照保护、跨层拒绝、通用层不判断被跟踪路径这几项时对应测试失败；2026-10-21 tingly-box 上 `bench/lifecycle.sh` 用新命令在 copy 和 overlay 上 0 失败，旧版本建 base 再用新版本检查修复也 0 失败；tingly-box 目录 `base add` 1.3 秒、每个 overlay 会话约 400 KB | 🔶 |
 | 15. 每会话一个视图路径 | overlay 视图从 `/workspace/<repo>` 改到 `sessions/<id>/root`，去掉 `TINGLY_FUSE_VIEW_ROOT`，所有后端路径模型一致（[0014](decisions/0014-per-session-view-path.md)，取代 [0002](decisions/0002-same-path-private-view.md)） | overlay 测试改为断言每会话路径不同，root 和 uid 65534 下全部通过；2026-10-22 tingly-box 两个不同路径共用 `GOCACHE`，第二个路径 `go build` 不加 `-trimpath` 93 秒、加了 10 秒 | 🔶 |
+| 16. overlay 视图在宿主上可见 | root：`overlay` 直接在宿主上挂内核 overlayfs，没有 holder；非 root：`fuse-overlay`（fuse-overlayfs），`overlay-ns` 保留为显式选项；`exec` 发现挂载丢了就重挂，`drop` 先卸载，卸载失败不删会话（[0015](decisions/0015-host-visible-overlay-view.md)） | `overlay_linux_test.go` 和 manager 全部场景在 root 和 uid 65534 下通过：宿主上读写 `sessions/<id>/root`，`exec` 里互相可见；`drop` 后 `findmnt` 为空，有进程在视图里时 `drop` 报错且不删数据；`umount` 或杀掉 FUSE 守护进程后下一次 `exec` 重挂且写入还在；旧版 overlay 会话用新二进制照常 `exec`。非 root 方案的对比数据见 [bench/hostview.md](../bench/hostview.md) | ✅ |
 
 ## 进行中与待做
 
@@ -42,7 +43,6 @@
 | checkpoint 与 fork | 冻结某个会话的 upper 作为只读层，在其上分叉新会话；或把 upper 写成 commit | 💭 |
 | base 生命周期的其余部分 | base 标签、会话迁移到新 base（[issue #6](https://github.com/tingly-dev/tingly-fuse/issues/6) 第 4、5 步） | 💭 |
 | 跨会话冲突预警 | 提前发现两个会话改了同一个路径 | 💭 |
-| overlay 视图在宿主上可见 | root 时直接在宿主上挂 overlay，非 root 时用 fuse-overlayfs 或 reflink，让人和 IDE 能直接打开会话目录（[0014](decisions/0014-per-session-view-path.md)） | 💭 |
 | FUSE 后端 | 按需加载 git 对象，创建会话 O(1)；是否值得取决于基准里 copy / overlay 之外还差什么 | 💭 |
 
 ## 开放问题

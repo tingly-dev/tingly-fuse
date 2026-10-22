@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -51,7 +52,8 @@ func testSharedPaths(t *testing.T) {
 	if err := m.Drop(ctx, "a"); err != nil {
 		t.Fatal(err)
 	}
-	if backend.Default == "overlay" {
+	switch backend.Default {
+	case "overlay-ns":
 		// A holder started again after a crash binds the shares again.
 		var st struct{ PID int }
 		data, _ := os.ReadFile(filepath.Join(m.Home, "sessions", "b", "holder.json"))
@@ -62,6 +64,12 @@ func testSharedPaths(t *testing.T) {
 		p.Kill()
 		for i := 0; i < 100 && p.Signal(syscall.Signal(0)) == nil; i++ {
 			time.Sleep(10 * time.Millisecond)
+		}
+	case "overlay":
+		// A mount lost to a reboot is made again, binding the shares again.
+		view := filepath.Join(m.Home, "sessions", "b", "root")
+		if out, err := exec.Command("umount", "-R", view).CombinedOutput(); err != nil {
+			t.Fatalf("umount: %v: %s", err, out)
 		}
 	}
 	if got := execIn(t, m, "b", "cat", "cache/d/y"); got != "y" {
@@ -96,7 +104,7 @@ func testSharedTrackedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: "a"})
-	if backend.Default != "overlay" {
+	if backend.Default != "overlay" && backend.Default != "overlay-ns" {
 		if err == nil || !strings.Contains(err.Error(), "tracked by git") {
 			t.Fatalf("spawn sharing a tracked path on %s: %v", backend.Default, err)
 		}

@@ -45,13 +45,15 @@ func init() {
 	if len(os.Args) > 1 && os.Args[1] == chdirArg1 {
 		chdirExec(os.Args[2:]) // never returns
 	}
-	backend.Register(Backend{})
-	backend.Default = "overlay"
+	register()
 }
 
-type Backend struct{}
+// NSBackend mounts the overlay inside the session's own mount namespace
+// (and a user namespace when unprivileged), where only processes started
+// through Command see it. The host sees an empty directory at the view.
+type NSBackend struct{}
 
-func (Backend) Name() string { return "overlay" }
+func (NSBackend) Name() string { return "overlay-ns" }
 
 func viewDir(ws backend.Workspace) string    { return filepath.Join(ws.StateDir, "root") }
 func upperDir(ws backend.Workspace) string   { return filepath.Join(ws.StateDir, "upper") }
@@ -59,10 +61,7 @@ func workDir(ws backend.Workspace) string    { return filepath.Join(ws.StateDir,
 func holderFile(ws backend.Workspace) string { return filepath.Join(ws.StateDir, "holder.json") }
 func lockFile(ws backend.Workspace) string   { return filepath.Join(ws.StateDir, "holder.lock") }
 
-// unprivileged reports whether views need their own user namespace.
-func unprivileged() bool { return os.Geteuid() != 0 }
-
-func (Backend) Create(ctx context.Context, ws backend.Workspace) (string, error) {
+func (NSBackend) Create(ctx context.Context, ws backend.Workspace) (string, error) {
 	// The view is a different path per session, like the other backends
 	// (ADR 0014). The mount point stays an empty directory on the host.
 	view := viewDir(ws)
@@ -76,7 +75,7 @@ func (Backend) Create(ctx context.Context, ws backend.Workspace) (string, error)
 
 // Command joins the session's mount namespace, starting its holder first
 // if needed, so every command of a session shares one overlay mount.
-func (Backend) Command(ctx context.Context, ws backend.Workspace, argv []string) (*exec.Cmd, error) {
+func (NSBackend) Command(ctx context.Context, ws backend.Workspace, argv []string) (*exec.Cmd, error) {
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
@@ -109,7 +108,7 @@ func (Backend) Command(ctx context.Context, ws backend.Workspace, argv []string)
 	return cmd, nil
 }
 
-func (Backend) Remove(ctx context.Context, ws backend.Workspace) error {
+func (NSBackend) Remove(ctx context.Context, ws backend.Workspace) error {
 	var errs []error
 	if err := stopHolder(ws); err != nil {
 		errs = append(errs, err)
