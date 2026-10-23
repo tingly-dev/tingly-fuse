@@ -147,6 +147,7 @@ Either kind:
 | Command | What it does |
 |---|---|
 | `exec <session> -- <cmd> [args...]` | Run a command inside the session's view |
+| `mount [<session>...]` | Mount the views of the named sessions, or all, again after a reboot or an unmount, so their directories can be opened on the host before anything runs in them. Prints `id` and view path for each view it checked; copy and clone views need nothing. To restore them at boot, run `tingly-fuse mount` from a startup unit ([ADR 0015](.design/decisions/0015-host-visible-overlay-view.md)) |
 | `drop <session>` | Delete the session and its view |
 | `list` | List sessions with repo, branch, base, backend and view path |
 | `share <name> [path...]` / `unshare <name> <path>...` | Share directories or files across all new sessions, such as caches or `.env`: one copy on the host, bind mounted under overlay and symlinked under copy and clone; no path lists them ([ADR 0011](.design/decisions/0011-shared-paths.md)) |

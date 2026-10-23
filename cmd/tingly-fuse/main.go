@@ -17,6 +17,7 @@
 // Either:
 //
 //	tingly-fuse exec <session> -- <cmd> [args...]
+//	tingly-fuse mount [<session>...]
 //	tingly-fuse share <name> [path...] / unshare <name> <path>...
 //	tingly-fuse drop <session> / list / remove <name> [--force]
 package main
@@ -59,6 +60,8 @@ git repositories (named after the git commands they correspond to):
 
 either:
   tingly-fuse exec <session> -- <cmd>...   run a command inside a session's view
+  tingly-fuse mount [<session>...]         mount the views of sessions (default: all) again after a
+                                           reboot, so their directories can be opened on the host
   tingly-fuse drop <session>               delete a session (unpushed work is lost)
   tingly-fuse list                         list sessions
   tingly-fuse share <name> [path...]       share paths across new sessions (no path: list them)
@@ -109,6 +112,8 @@ func run(ctx context.Context, args []string) error {
 		return runGit(ctx, m, args)
 	case "exec":
 		return runExec(ctx, m, args)
+	case "mount":
+		return runMount(ctx, m, args)
 	case "share", "unshare":
 		return runShare(m, cmd == "unshare", args)
 	case "drop":
@@ -461,6 +466,31 @@ func runExec(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 		return fmt.Errorf("usage: tingly-fuse exec <session> -- <cmd> [args...]")
 	}
 	return m.Exec(ctx, args[0], args[2:], os.Stdin, os.Stdout, os.Stderr)
+}
+
+// runMount restores views lost to a reboot: the sessions named, or all.
+func runMount(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
+	if len(args) == 0 {
+		sessions, err := m.MountAll(ctx)
+		for _, s := range sessions {
+			fmt.Printf("%s\t%s\n", s.ID, s.ViewPath)
+		}
+		return err
+	}
+	var errs []error
+	for _, id := range args {
+		if err := m.Mount(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", id, err))
+			continue
+		}
+		sess, err := m.Session(id)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		fmt.Printf("%s\t%s\n", sess.ID, sess.ViewPath)
+	}
+	return errors.Join(errs...)
 }
 
 func runList(m *tinglyfuse.Manager) error {

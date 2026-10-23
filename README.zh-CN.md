@@ -147,6 +147,7 @@ Git 仓库。每个子命令都以对应的 git 命令命名，参数顺序也�
 | 命令 | 做什么 |
 |---|---|
 | `exec <session> -- <cmd> [args...]` | 在会话视图里运行命令 |
+| `mount [<session>...]` | 重启或卸载之后，把指定会话（默认全部）的视图重新挂上，这样不用先在里面运行命令，就能在宿主上打开它们的目录。对检查过的视图打印会话 id 和视图路径；copy 和 clone 的视图不需要挂载。想开机恢复，可在启动项里运行 `tingly-fuse mount`（[ADR 0015](.design/decisions/0015-host-visible-overlay-view.md)） |
 | `drop <session>` | 删除会话和它的视图 |
 | `list` | 列出会话：仓库、分支、base、后端、视图路径 |
 | `share <name> [path...]` / `unshare <name> <path>...` | 让所有新会话共享指定的目录或文件，例如缓存或 `.env`：宿主上一份，overlay 下 bind mount，copy 和 clone 下用符号链接；不带路径时列出（[ADR 0011](.design/decisions/0011-shared-paths.md)） |

@@ -354,6 +354,48 @@ func (m *Manager) Exec(ctx context.Context, id string, argv []string, stdin io.R
 	return m.run(ctx, b, ws, sess, argv, stdin, stdout, stderr)
 }
 
+// Mount makes the session's view present on the host again after a reboot or
+// an unmount, for backends whose view is a mount; for the others, and for a
+// view already mounted, it does nothing. Exec does this on its own, so it is
+// only needed to open a session's directory before anything has run in it.
+func (m *Manager) Mount(ctx context.Context, id string) error {
+	_, b, ws, err := m.load(id)
+	if err != nil {
+		return err
+	}
+	if mb, ok := b.(backend.Mounter); ok {
+		return mb.Mount(ctx, ws)
+	}
+	return nil
+}
+
+// MountAll mounts every session's view, continuing past failures, and returns
+// the sessions that have a mount to restore along with the joined errors.
+func (m *Manager) MountAll(ctx context.Context) ([]*session.Session, error) {
+	sessions, err := m.sessions.List()
+	if err != nil {
+		return nil, err
+	}
+	var done []*session.Session
+	var errs []error
+	for _, s := range sessions {
+		_, b, _, lerr := m.load(s.ID)
+		if lerr != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", s.ID, lerr))
+			continue
+		}
+		if _, ok := b.(backend.Mounter); !ok {
+			continue
+		}
+		if merr := m.Mount(ctx, s.ID); merr != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", s.ID, merr))
+			continue
+		}
+		done = append(done, s)
+	}
+	return done, errors.Join(errs...)
+}
+
 // Drop removes the session's view and metadata. Unpushed work is lost,
 // except with shared git, where the session's branch and commits stay in
 // the shared repository.

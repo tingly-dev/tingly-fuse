@@ -512,3 +512,54 @@ func TestOverlayNeedsRoot(t *testing.T) {
 		t.Errorf("create as non-root: %v", err)
 	}
 }
+
+// mount puts a lost view back without running anything in it, so an IDE can
+// open the directory after a reboot.
+func TestMountRestoresView(t *testing.T) {
+	for _, name := range hostBackends {
+		t.Run(name, func(t *testing.T) {
+			m, _ := setupFor(t, name)
+			ctx := context.Background()
+			var ids []string
+			for _, id := range []string{"a", "b"} {
+				if _, err := m.Git().AddWorktree(ctx, manager.WorktreeOptions{Repo: "demo", ID: id, Backend: name}); err != nil {
+					t.Fatal(err)
+				}
+				execIn(t, m, id, "sh", "-c", "echo kept-"+id+" > X")
+				ids = append(ids, id)
+			}
+			view := func(id string) string { return filepath.Join(m.Home, "sessions", id, "root") }
+			for _, id := range ids {
+				unmount(t, view(id))
+			}
+
+			if err := m.Mount(ctx, "a"); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := os.ReadFile(filepath.Join(view("a"), "X")); string(got) != "kept-a\n" {
+				t.Errorf("host reads a's X after mount = %q", got)
+			}
+			if _, err := os.Stat(filepath.Join(view("b"), "X")); err == nil {
+				t.Errorf("mounting a also mounted b")
+			}
+			// Mounting again changes nothing.
+			if err := m.Mount(ctx, "a"); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(mountsOf(view("a"))); n != 1 {
+				t.Errorf("mounts at a's view = %d, want 1", n)
+			}
+
+			done, err := m.MountAll(ctx)
+			if err != nil || len(done) != 2 {
+				t.Fatalf("mount all: %d sessions, %v", len(done), err)
+			}
+			if got, _ := os.ReadFile(filepath.Join(view("b"), "X")); string(got) != "kept-b\n" {
+				t.Errorf("host reads b's X after mount all = %q", got)
+			}
+			if err := m.Mount(ctx, "nope"); err == nil {
+				t.Errorf("mount of an unknown session succeeded")
+			}
+		})
+	}
+}

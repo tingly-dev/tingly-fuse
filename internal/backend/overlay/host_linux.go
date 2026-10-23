@@ -57,6 +57,13 @@ func (Backend) Command(ctx context.Context, ws backend.Workspace, argv []string)
 	return hostCommand(ctx, ws, argv, kernelMount)
 }
 
+func (Backend) Mount(ctx context.Context, ws backend.Workspace) error {
+	if legacy(ws) {
+		return NSBackend{}.Mount(ctx, ws)
+	}
+	return ensureMounted(ws, kernelMount)
+}
+
 func (Backend) Remove(ctx context.Context, ws backend.Workspace) error {
 	if legacy(ws) {
 		return NSBackend{}.Remove(ctx, ws)
@@ -93,6 +100,10 @@ func (FuseBackend) Create(ctx context.Context, ws backend.Workspace) (string, er
 
 func (FuseBackend) Command(ctx context.Context, ws backend.Workspace, argv []string) (*exec.Cmd, error) {
 	return hostCommand(ctx, ws, argv, fuseMount)
+}
+
+func (FuseBackend) Mount(ctx context.Context, ws backend.Workspace) error {
+	return ensureMounted(ws, fuseMount)
 }
 
 func (FuseBackend) Remove(ctx context.Context, ws backend.Workspace) error {

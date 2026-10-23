@@ -197,6 +197,15 @@ func TestCommands(t *testing.T) {
 	c.fails(1, []string{"mutually exclusive"}, "git", "worktree", "add", "demo", "main", "--base", "x")
 	c.fails(1, []string{"no base"}, "git", "worktree", "add", "demo", "--base", "nope")
 
+	// mount has nothing to restore for copy views, but names what it checked.
+	if out := c.ok("mount"); out != "" {
+		t.Errorf("mount with only copy sessions printed %q", out)
+	}
+	if out := c.ok("mount", "a"); !strings.HasPrefix(out, "a\t") || !strings.HasSuffix(out, filepath.Join("sessions", "a", "root")) {
+		t.Errorf("mount a: %q", out)
+	}
+	c.fails(1, []string{"nope"}, "mount", "nope")
+
 	// exec passes stdout through and propagates the exit code.
 	if out := c.ok("exec", "a", "--", "sh", "-c", `echo "$TINGLY_SESSION"; cat README.md`); out != "a\nhello" {
 		t.Errorf("exec output = %q", out)
