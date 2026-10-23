@@ -72,6 +72,13 @@ type Backend interface {
 	Remove(ctx context.Context, ws Workspace) error
 }
 
+// Mounter is implemented by backends whose view is a mount that can be lost,
+// such as to a reboot. Mount makes the view present again, doing nothing if
+// it already is; Command does the same before every command.
+type Mounter interface {
+	Mount(ctx context.Context, ws Workspace) error
+}
+
 var (
 	mu       sync.RWMutex
 	registry = map[string]Backend{}

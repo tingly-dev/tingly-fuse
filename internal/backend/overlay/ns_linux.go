@@ -108,6 +108,13 @@ func (NSBackend) Command(ctx context.Context, ws backend.Workspace, argv []strin
 	return cmd, nil
 }
 
+// Mount starts the session's holder if it is not running, which mounts the
+// overlay in the session's namespace. The host sees nothing either way.
+func (NSBackend) Mount(ctx context.Context, ws backend.Workspace) error {
+	_, err := ensureHolder(ws)
+	return err
+}
+
 func (NSBackend) Remove(ctx context.Context, ws backend.Workspace) error {
 	var errs []error
 	if err := stopHolder(ws); err != nil {

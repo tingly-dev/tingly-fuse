@@ -58,6 +58,6 @@ Linux 上有三个 overlay 后端：
 ## 后果
 
 - 新增运行时依赖：非 root 要 `fuse-overlayfs` 和可用的 `/dev/fuse`；root 用 `overlay` 不再需要 `nsenter`（`overlay-ns` 仍要）。
-- root 下 `spawn` 之后，宿主的 `findmnt` 会列出每个会话的挂载（overlay，加每个共享路径的 bind mount）。机器重启后挂载消失，下一次 `exec` 才重挂；直接在宿主上打开一个没人 `exec` 过的会话目录，重启后看到的是空目录，需要先 `exec` 一次。
+- root 下 `spawn` 之后，宿主的 `findmnt` 会列出每个会话的挂载（overlay，加每个共享路径的 bind mount）。机器重启后挂载消失，下一次 `exec` 才重挂；直接在宿主上打开一个没人 `exec` 过的会话目录，重启后看到的是空目录，需要先运行 `tingly-fuse mount [会话...]`（不带会话就挂全部；可放进开机启动）或 `exec` 一次。`mount` 对已挂载的视图什么都不做，对 copy、clone 也什么都不做。
 - 宿主上的进程能写会话的视图，也就能写 upper；这是目的，但意味着人和 agent 可以同时改同一个文件，tingly-fuse 不做协调。
 - `fuse-overlay` 的 pnpm 行为：ext4 上 `pnpm install`（依赖已在 base 里）约 11 秒，XFS 上约 2 秒，kernel overlay 上约 1.7 秒。原因还没查清，不影响选择。

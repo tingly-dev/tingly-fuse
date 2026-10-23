@@ -84,7 +84,7 @@ Git 层，子命令按对应的 git 命令命名，会话就是一个 worktree�
 
 ## 已知限制
 
-- `overlay` 和 `fuse-overlay` 的挂载在宿主上，进程退出后仍在，但机器重启后会丢；下一次 `exec` 才重挂，所以重启后直接打开没人 `exec` 过的会话目录会看到空目录。`drop` 时有进程还在视图里会报错并保留会话（[0015](decisions/0015-host-visible-overlay-view.md)）。
+- `overlay` 和 `fuse-overlay` 的挂载在宿主上，进程退出后仍在，但机器重启后会丢；下一次 `exec` 或 `tingly-fuse mount` 会重挂，所以重启后直接打开没人 `exec` 过的会话目录会看到空目录，要先 `tingly-fuse mount`（可放进开机启动）。`drop` 时有进程还在视图里会报错并保留会话（[0015](decisions/0015-host-visible-overlay-view.md)）。
 - `fuse-overlay` 要 `fuse-overlayfs` 和 `/dev/fuse`；宿主上扫整个工作区比内核 overlay 慢（tingly-box 上 `git status` 约 0.3 秒对 0.05 秒），构建慢 0%–25%（[bench/hostview.md](../bench/hostview.md)）。
 - `overlay-ns` 依赖 `nsenter`（util-linux）；非 root 需要 Linux 5.11+ 且允许非特权 user namespace。它的视图宿主上看不到。
 - `clone` 后端已在真实的 Mac 上验证：克隆生效（spawn 0.09 秒、新会话约 2 MB），`go test -race ./...` 通过。注意 `du` 会把克隆和 base 共享的数据块重复计入，要看真实占用只能比较 `df` 前后的差值。
