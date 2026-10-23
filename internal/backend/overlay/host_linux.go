@@ -57,6 +57,10 @@ func (Backend) Command(ctx context.Context, ws backend.Workspace, argv []string)
 	return hostCommand(ctx, ws, argv, kernelMount)
 }
 
+// HostVisible is false for sessions made by the namespace-only version of
+// this backend.
+func (Backend) HostVisible(ws backend.Workspace) bool { return !legacy(ws) }
+
 func (Backend) Remove(ctx context.Context, ws backend.Workspace) error {
 	if legacy(ws) {
 		return NSBackend{}.Remove(ctx, ws)

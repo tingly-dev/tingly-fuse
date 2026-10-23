@@ -147,6 +147,8 @@ Either kind:
 | Command | What it does |
 |---|---|
 | `exec <session> -- <cmd> [args...]` | Run a command inside the session's view |
+| `checkpoint <session>` | Freeze the session's tree (uncommitted and untracked files included) as a new base and print its id; start sessions from it with `git worktree add --base` or `spawn --base`. Copies the whole tree, with reflinks where the filesystem has them; stop writers in the session first ([ADR 0017](.design/decisions/0017-checkpoint-and-fork.md)) |
+| `fork <session> [--id id] [-b branch] [--backend name] [--share path]...` | `checkpoint`, then start a new session from it: it sees the parent's tree as it is now, and then the two diverge. The backend defaults to the parent's |
 | `drop <session>` | Delete the session and its view |
 | `list` | List sessions with repo, branch, base, backend and view path |
 | `share <name> [path...]` / `unshare <name> <path>...` | Share directories or files across all new sessions, such as caches or `.env`: one copy on the host, bind mounted under overlay and symlinked under copy and clone; no path lists them ([ADR 0011](.design/decisions/0011-shared-paths.md)) |

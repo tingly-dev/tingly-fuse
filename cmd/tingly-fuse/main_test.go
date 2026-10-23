@@ -197,6 +197,32 @@ func TestCommands(t *testing.T) {
 	c.fails(1, []string{"mutually exclusive"}, "git", "worktree", "add", "demo", "main", "--base", "x")
 	c.fails(1, []string{"no base"}, "git", "worktree", "add", "demo", "--base", "nope")
 
+	// checkpoint freezes a session as a base; fork starts a session from one.
+	c.ok("exec", "a", "--", "sh", "-c", "echo mine > note")
+	ckpt := c.ok("checkpoint", "a")
+	if !strings.HasPrefix(ckpt, "dir-") {
+		t.Errorf("checkpoint printed %q", ckpt)
+	}
+	if out := c.ok("git", "worktree", "add", "demo", "--base", ckpt, "--id", "k1", "--backend", "copy"); !strings.HasPrefix(out, "k1\n") {
+		t.Errorf("worktree add --base checkpoint:\n%s", out)
+	}
+	forkOut := c.ok("fork", "a", "--id", "k2")
+	if !strings.HasPrefix(forkOut, "k2\n") || !strings.Contains(forkOut, "branch: agent/k2") {
+		t.Errorf("fork output:\n%s", forkOut)
+	}
+	if out := c.ok("exec", "k2", "--", "cat", "note"); out != "mine" {
+		t.Errorf("fork does not have the parent's file: %q", out)
+	}
+	c.fails(1, []string{"usage: tingly-fuse checkpoint"}, "checkpoint")
+	c.fails(1, []string{"usage: tingly-fuse fork"}, "fork")
+	c.fails(1, []string{"nope"}, "fork", "nope")
+	c.ok("drop", "k1")
+	c.ok("drop", "k2")
+	// Their checkpoint bases are unused now; remove them so the base tests
+	// below see only their own.
+	c.ok("base", "rm", "demo", ckpt)
+	c.ok("base", "rm", "demo", regexp.MustCompile(`base: (\S+)`).FindStringSubmatch(forkOut)[1])
+
 	// exec passes stdout through and propagates the exit code.
 	if out := c.ok("exec", "a", "--", "sh", "-c", `echo "$TINGLY_SESSION"; cat README.md`); out != "a\nhello" {
 		t.Errorf("exec output = %q", out)

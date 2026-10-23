@@ -17,6 +17,7 @@
 // Either:
 //
 //	tingly-fuse exec <session> -- <cmd> [args...]
+//	tingly-fuse checkpoint <session> / fork <session> [--id id] [-b branch] [--backend name] [--share path]...
 //	tingly-fuse share <name> [path...] / unshare <name> <path>...
 //	tingly-fuse drop <session> / list / remove <name> [--force]
 package main
@@ -59,6 +60,10 @@ git repositories (named after the git commands they correspond to):
 
 either:
   tingly-fuse exec <session> -- <cmd>...   run a command inside a session's view
+  tingly-fuse checkpoint <session>         freeze the session's tree as a new base and print its id;
+                                           start sessions from it with spawn / git worktree add --base
+  tingly-fuse fork <session> [flags]       checkpoint, then start a new session from it (--id, -b
+                                           branch, --backend, --share; backend defaults to the parent's)
   tingly-fuse drop <session>               delete a session (unpushed work is lost)
   tingly-fuse list                         list sessions
   tingly-fuse share <name> [path...]       share paths across new sessions (no path: list them)
@@ -109,6 +114,18 @@ func run(ctx context.Context, args []string) error {
 		return runGit(ctx, m, args)
 	case "exec":
 		return runExec(ctx, m, args)
+	case "checkpoint":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: tingly-fuse checkpoint <session>")
+		}
+		base, err := m.Checkpoint(ctx, args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Println(base)
+		return nil
+	case "fork":
+		return runFork(ctx, m, args)
 	case "share", "unshare":
 		return runShare(m, cmd == "unshare", args)
 	case "drop":
@@ -453,6 +470,30 @@ func runGitWorktreeAdd(ctx context.Context, g *tinglyfuse.Git, args []string) er
 	if sess.Source != "" {
 		fmt.Fprintf(os.Stderr, "source: %s\n", sess.Source)
 	}
+	return nil
+}
+
+func runFork(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
+	const usage = "usage: tingly-fuse fork <session> [--id id] [-b branch] [--backend name] [--share path]..."
+	fs := flag.NewFlagSet("fork", flag.ContinueOnError)
+	var opts tinglyfuse.ForkOptions
+	fs.StringVar(&opts.ID, "id", "", "id of the new session (default: random)")
+	fs.StringVar(&opts.Branch, "b", "", "git: branch to create (default: agent/<id>)")
+	fs.StringVar(&opts.Backend, "backend", "", "view backend of the new session (default: the parent's)")
+	fs.Var((*listFlag)(&opts.Share), "share", "also share this path with other sessions sharing it (repeatable, or comma-separated)")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return errors.New(usage)
+	}
+	sess, err := m.Fork(ctx, pos[0], opts)
+	if err != nil {
+		return err
+	}
+	fmt.Println(sess.ID)
+	fmt.Fprintf(os.Stderr, "view: %s\nbranch: %s\nbase: %s\n", sess.ViewPath, orDash(sess.Branch), sess.Base)
 	return nil
 }
 
