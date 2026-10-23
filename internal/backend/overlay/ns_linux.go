@@ -108,6 +108,9 @@ func (NSBackend) Command(ctx context.Context, ws backend.Workspace, argv []strin
 	return cmd, nil
 }
 
+// HostVisible is false: the mount exists only in the session's namespace.
+func (NSBackend) HostVisible(backend.Workspace) bool { return false }
+
 func (NSBackend) Remove(ctx context.Context, ws backend.Workspace) error {
 	var errs []error
 	if err := stopHolder(ws); err != nil {

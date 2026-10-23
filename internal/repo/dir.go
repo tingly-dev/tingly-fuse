@@ -103,6 +103,13 @@ func AddDir(ctx context.Context, home, name, src string, opts DirOptions) (*Repo
 	return r, id, nil
 }
 
+// SnapshotTree copies a directory tree into a new base of a dir repository
+// and returns its id; the caller holds the bases lock. It is how a session's
+// view becomes a base (see Manager.Checkpoint).
+func (r *Repo) SnapshotTree(ctx context.Context, src string) (string, error) {
+	return r.snapshotPlain(ctx, src)
+}
+
 // snapshotPlain copies src into a new base and returns its id.
 func (r *Repo) snapshotPlain(ctx context.Context, src string) (string, error) {
 	b := make([]byte, 3)

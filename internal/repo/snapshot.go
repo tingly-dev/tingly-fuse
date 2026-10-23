@@ -2,6 +2,8 @@ package repo
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -35,7 +37,13 @@ func (r *Repo) SnapshotDir(ctx context.Context, src string) (id, head string, er
 	if err != nil {
 		return "", "", fmt.Errorf("%s: %w", src, err)
 	}
-	id = fmt.Sprintf("dir-%s-%s", head[:12], time.Now().UTC().Format("20060102T150405"))
+	// The random suffix keeps two snapshots of the same commit in the same
+	// second apart: forking a session twice, say.
+	rnd := make([]byte, 3)
+	if _, err := rand.Read(rnd); err != nil {
+		return "", "", err
+	}
+	id = fmt.Sprintf("dir-%s-%s-%s", head[:12], time.Now().UTC().Format("20060102T150405"), hex.EncodeToString(rnd))
 
 	bases := filepath.Join(r.dir, "bases")
 	if err := os.MkdirAll(bases, 0o755); err != nil {

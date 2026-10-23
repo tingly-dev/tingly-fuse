@@ -11,7 +11,7 @@
 
 `spawn <repo> --from-dir <dir>` 把 `<dir>` 作为只读底层，具体做法：
 
-1. **快照而不是引用。** 用 reflink 复制（Linux `cp -a --reflink=auto`，macOS `cp -cRp`）到 `bases/dir-<head前12位>-<UTC时间>/`。源目录之后随便改、甚至删掉，都不影响已有会话。文件系统不支持 reflink 时退回整份复制。
+1. **快照而不是引用。** 用 reflink 复制（Linux `cp -a --reflink=auto`，macOS `cp -cRp`）到 `bases/dir-<head前12位>-<UTC时间>-<6位随机>/`（随机后缀防止同一秒对同一个 commit 做两次快照时重名，见 [0017](0017-checkpoint-and-fork.md)）。源目录之后随便改、甚至删掉，都不影响已有会话。文件系统不支持 reflink 时退回整份复制。
 2. **目录内容按原样取用，包括未提交的改动和 ignore 掉的文件。** 这正是目的：`node_modules`、构建产物都在里面。
 3. **把快照里的对象并入共享镜像。** 目录里可能有从未推送的提交、已暂存的 blob，丢了会让视图里的 git 坏掉。对象来源包括快照自己的 `.git/objects`，以及它的 `objects/info/alternates` 递归指向的目录（后者只读取、复制进镜像，不移动）。已存在的对象跳过；pack 先放 `.pack` 再放 `.idx`。然后把快照的 `.git/objects` 清空，只留指向镜像的 alternates，和 [0003](0003-shared-objects-via-alternates.md) 里 `EnsureBase` 产出的形态一致。
 4. **子模块。** `.git/modules/**` 下每个 gitdir 按它的 `remote.origin.url` 并入对应的子模块镜像（没有则新建一个空的 bare 镜像，fetch refspec 为 `+refs/*:refs/*`，之后 `ensureModuleMirror` 需要时照常 fetch）。取不到 URL 的 gitdir 保持原样。

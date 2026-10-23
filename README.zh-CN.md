@@ -147,6 +147,8 @@ Git 仓库。每个子命令都以对应的 git 命令命名，参数顺序也�
 | 命令 | 做什么 |
 |---|---|
 | `exec <session> -- <cmd> [args...]` | 在会话视图里运行命令 |
+| `checkpoint <session>` | 把会话当前的目录树（未提交和未跟踪的文件也算）冻结成一个新 base 并打印 id；用 `git worktree add --base` 或 `spawn --base` 从它起会话。整份复制，文件系统支持时用 reflink；先停掉会话里还在写的进程（[ADR 0017](.design/decisions/0017-checkpoint-and-fork.md)） |
+| `fork <session> [--id id] [-b branch] [--backend name] [--share path]...` | 先 `checkpoint`，再从它起一个新会话：新会话看到父会话此刻的目录树，之后两边各走各的。后端默认和父会话一样 |
 | `drop <session>` | 删除会话和它的视图 |
 | `list` | 列出会话：仓库、分支、base、后端、视图路径 |
 | `share <name> [path...]` / `unshare <name> <path>...` | 让所有新会话共享指定的目录或文件，例如缓存或 `.env`：宿主上一份，overlay 下 bind mount，copy 和 clone 下用符号链接；不带路径时列出（[ADR 0011](.design/decisions/0011-shared-paths.md)） |

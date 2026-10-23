@@ -72,6 +72,13 @@ type Backend interface {
 	Remove(ctx context.Context, ws Workspace) error
 }
 
+// HostVisible is implemented by backends whose view may not be a directory
+// the host can read, such as one mounted in a private mount namespace.
+// Backends that do not implement it are always visible.
+type HostVisible interface {
+	HostVisible(ws Workspace) bool
+}
+
 var (
 	mu       sync.RWMutex
 	registry = map[string]Backend{}

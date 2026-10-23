@@ -62,6 +62,8 @@ type (
 	Repo = repo.Repo
 	// Session is one agent's view of a repository.
 	Session = session.Session
+	// ForkOptions say what a forked session gets.
+	ForkOptions = manager.ForkOptions
 	// BaseInfo describes a base and the sessions using it.
 	BaseInfo = manager.BaseInfo
 	// BaseHealth is the result of checking one base.
