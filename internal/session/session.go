@@ -22,16 +22,18 @@ var validID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Session is one agent's view of a repository.
 type Session struct {
-	ID        string    `json:"id"`
-	Repo      string    `json:"repo"`
-	Base      string    `json:"base"`             // base id: snap-… for a dir repository; for git, a commit sha, or dir-<sha12>-<time> for a prepared directory
-	Head      string    `json:"head,omitempty"`   // commit the base is at, when Base is not itself a sha
-	Source    string    `json:"source,omitempty"` // directory the base was snapshotted from
-	Branch    string    `json:"branch"`           // git: branch created inside the view; empty for a dir repository
-	Backend   string    `json:"backend"`          // backend name
-	ViewPath  string    `json:"view_path"`
-	Shared    []string  `json:"shared,omitempty"` // shared paths, fixed at spawn
-	CreatedAt time.Time `json:"created_at"`
+	ID       string   `json:"id"`
+	Repo     string   `json:"repo"`
+	Base     string   `json:"base"`             // base id: snap-… for a dir repository; for git, a commit sha, or dir-<sha12>-<time> for a prepared directory
+	Head     string   `json:"head,omitempty"`   // commit the base is at, when Base is not itself a sha
+	Source   string   `json:"source,omitempty"` // directory the base was snapshotted from
+	Branch   string   `json:"branch"`           // git: branch created inside the view; empty for a dir repository
+	Backend  string   `json:"backend"`          // backend name
+	ViewPath string   `json:"view_path"`
+	Shared   []string `json:"shared,omitempty"` // shared paths, fixed at spawn
+	// Labels are tags set by whoever manages the session; see labels.go.
+	Labels    map[string]string `json:"labels,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
 }
 
 // Store reads and writes sessions under a tingly-fuse home.
@@ -82,6 +84,30 @@ func (s *Store) Save(sess *Session) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// Update changes a session's metadata under a lock, so concurrent updates
+// of one session (two label changes) do not lose each other's.
+func (s *Store) Update(id string, change func(*Session) error) (*Session, error) {
+	if !validID.MatchString(id) {
+		return nil, fmt.Errorf("invalid session id %q", id)
+	}
+	if _, err := os.Stat(s.Dir(id)); err != nil {
+		return nil, fmt.Errorf("session %q: %w", id, err)
+	}
+	unlock, err := lock(filepath.Join(s.Dir(id), ".session.lock"))
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	sess, err := s.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := change(sess); err != nil {
+		return nil, err
+	}
+	return sess, s.Save(sess)
 }
 
 // Get loads a session.

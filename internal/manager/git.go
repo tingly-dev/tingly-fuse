@@ -59,6 +59,8 @@ type WorktreeOptions struct {
 	// Share adds shared paths for this session on top of the repository's;
 	// see SpawnOptions.Share.
 	Share []string
+	// Labels are tags for the session; see SpawnOptions.Labels.
+	Labels map[string]string
 }
 
 // AddWorktree creates a session of a git repository, like git worktree
@@ -118,7 +120,7 @@ func (g *Git) AddWorktree(ctx context.Context, opts WorktreeOptions) (*session.S
 		return nil, err
 	}
 
-	sess := &session.Session{ID: opts.ID, Base: sha, Head: head, Source: source}
+	sess := &session.Session{ID: opts.ID, Base: sha, Head: head, Source: source, Labels: opts.Labels}
 	return g.m.newSession(ctx, r, b, baseDir, sess, opts.Share, func(ws backend.Workspace, sess *session.Session, shares []repo.Share) error {
 		if r.SharedGit {
 			dir, err := r.AddSessionGitDir(ctx, sess.ID, baseDir, ws.ViewPath)
