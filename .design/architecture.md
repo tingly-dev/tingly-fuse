@@ -25,7 +25,7 @@ repos/<name>/shares/<path>      每个共享路径在宿主上的唯一一份（
 repos/<name>/shared.git         仅 --shared-git：所有会话共用的 refs、config 和新对象；worktrees/<id>/ 是各会话的 HEAD、index、子模块 gitdir
 repos/<name>/bases/<sha>/       某个 commit 的只读基础 checkout
 repos/<name>/bases/dir-<sha12>-<t>/  由 git worktree add --from-dir 从现成目录快照出的基础 checkout
-sessions/<id>/session.json      会话元数据（repo、base、分支、后端、视图路径）
+sessions/<id>/session.json      会话元数据（repo、base、分支、后端、视图路径、标签）
 sessions/<id>/root/             会话的视图（所有后端；overlay-ns 下宿主上是空的挂载点）
 sessions/<id>/...               后端私有状态（overlay 的 upper/work；overlay-ns 的 holder.json 等）
 ```

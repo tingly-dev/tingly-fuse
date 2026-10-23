@@ -148,7 +148,8 @@ Git 仓库。每个子命令都以对应的 git 命令命名，参数顺序也�
 |---|---|
 | `exec <session> -- <cmd> [args...]` | 在会话视图里运行命令 |
 | `drop <session>` | 删除会话和它的视图 |
-| `list` | 列出会话：仓库、分支、base、后端、视图路径 |
+| `list [-l selector]...` | 列出会话：仓库、分支、base、后端、标签、视图路径。`-l key=value`（或 `-l key` 表示任意值）只留下带这个标签的会话，重复使用表示都要满足 |
+| `label <session> [key=value \| key-]...` | 给会话设置标签，用 `key-` 删除一个，不带参数则打印（[ADR 0016](.design/decisions/0016-session-labels.md)） |
 | `share <name> [path...]` / `unshare <name> <path>...` | 让所有新会话共享指定的目录或文件，例如缓存或 `.env`：宿主上一份，overlay 下 bind mount，copy 和 clone 下用符号链接；不带路径时列出（[ADR 0011](.design/decisions/0011-shared-paths.md)） |
 | `base list [name]` | 不带名字时列出所有仓库：类型、会话数、base 数、来源。带名字时列出它的 base：创建时间、哪些会话在用，以及所在 commit 和是否已固定（Git）或哪个是当前快照（目录） |
 | `base rm <name> <id>` | 删除没有会话在用的 base（`id` 可以是唯一前缀）；之后 git gc 会回收只有它需要的对象。目录的当前快照不会被删 |
@@ -168,6 +169,7 @@ Git 仓库。每个子命令都以对应的 git 命令命名，参数顺序也�
 | `--base <id>` | 复用已有 base（id 即 `git worktree add` 打印的 `base:`，或 `list` 的 BASE 列） |
 | `--id <id>` | 会话 id（默认随机） |
 | `--backend <name>` | `overlay`、`fuse-overlay`、`overlay-ns`、`clone` 或 `copy`（默认值取决于平台和用户） |
+| `--label <key=value>` | 给会话打标签（可重复，也可逗号分隔）；tingly-fuse 不解释标签，脚本或 agent 框架可以用它找回自己的会话 |
 | `--share <path>` | 在仓库的共享路径之外，再和其他带同一路径 spawn 的会话共享这个路径（可重复，也可逗号分隔） |
 
 `spawn` 也接受 `--base`、`--id`、`--backend`、`--share`，含义相同。两者中途失败都会清理掉已创建的一切。

@@ -96,6 +96,13 @@ func Open(home string) (*Manager, error) {
 	return manager.New(home), nil
 }
 
+// ParseLabels turns "key=value" arguments into the label set of SpawnOptions
+// and WorktreeOptions, rejecting invalid keys and values.
+func ParseLabels(args []string) (map[string]string, error) { return session.ParseLabels(args) }
+
+// FormatLabels renders labels as sorted key=value pairs, or "-" for none.
+func FormatLabels(labels map[string]string) string { return session.FormatLabels(labels) }
+
 // Backends lists the backends available on this platform.
 func Backends() []string { return backend.Names() }
 

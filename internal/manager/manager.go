@@ -98,6 +98,9 @@ type SpawnOptions struct {
 	// (see SetShares). It shares them with every other session that shares
 	// the same path, through the repository's one copy of it.
 	Share []string
+	// Labels are tags for the session, such as the task it works on; see
+	// SetLabels.
+	Labels map[string]string
 }
 
 // Spawn creates a session of a dir repository: a private view of one of its
@@ -130,7 +133,7 @@ func (m *Manager) Spawn(ctx context.Context, opts SpawnOptions) (*session.Sessio
 	if err != nil {
 		return nil, err
 	}
-	return m.newSession(ctx, r, b, baseDir, &session.Session{ID: opts.ID, Base: id, Source: r.Source}, opts.Share, nil)
+	return m.newSession(ctx, r, b, baseDir, &session.Session{ID: opts.ID, Base: id, Source: r.Source, Labels: opts.Labels}, opts.Share, nil)
 }
 
 // existingBase is the directory of r's base id, which must exist.
@@ -149,6 +152,9 @@ func existingBase(r *repo.Repo, id string) (string, error) {
 // setup in it, and saves sess. sess comes with its base filled in, and its
 // id when the caller chose one. On error nothing of the session is left.
 func (m *Manager) newSession(ctx context.Context, r *repo.Repo, b backend.Backend, baseDir string, sess *session.Session, share []string, setup func(ws backend.Workspace, sess *session.Session, shares []repo.Share) error) (_ *session.Session, err error) {
+	if err := session.ValidateLabels(sess.Labels); err != nil {
+		return nil, err
+	}
 	shared, err := repo.MergeSharePaths(r.SharedPaths, share)
 	if err != nil {
 		return nil, err
@@ -344,6 +350,54 @@ func (m *Manager) Session(id string) (*session.Session, error) { return m.sessio
 
 // Sessions lists all sessions.
 func (m *Manager) Sessions() ([]*session.Session, error) { return m.sessions.List() }
+
+// SessionsWithLabels lists the sessions whose labels match every term of
+// selector ("key=value", or "key" for any value), oldest first.
+func (m *Manager) SessionsWithLabels(selector []string) ([]*session.Session, error) {
+	sel, err := session.ParseSelector(selector)
+	if err != nil {
+		return nil, err
+	}
+	all, err := m.sessions.List()
+	if err != nil {
+		return nil, err
+	}
+	var out []*session.Session
+	for _, s := range all {
+		if sel.Match(s.Labels) {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// SetLabels adds or changes the labels in set and removes those named in
+// remove, and returns the session as saved.
+func (m *Manager) SetLabels(id string, set map[string]string, remove []string) (*session.Session, error) {
+	if err := session.ValidateLabels(set); err != nil {
+		return nil, err
+	}
+	for _, k := range remove {
+		if _, both := set[k]; both {
+			return nil, fmt.Errorf("label %q is both set and removed", k)
+		}
+	}
+	return m.sessions.Update(id, func(s *session.Session) error {
+		if s.Labels == nil && len(set) > 0 {
+			s.Labels = map[string]string{}
+		}
+		for _, k := range remove {
+			delete(s.Labels, k)
+		}
+		for k, v := range set {
+			s.Labels[k] = v
+		}
+		if len(s.Labels) == 0 {
+			s.Labels = nil
+		}
+		return nil
+	})
+}
 
 // Exec runs argv inside the session's view.
 func (m *Manager) Exec(ctx context.Context, id string, argv []string, stdin io.Reader, stdout, stderr io.Writer) error {

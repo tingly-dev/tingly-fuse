@@ -26,6 +26,7 @@
 | 14. 通用层和 `git` 子命令 | 任意目录 `base add` 快照、`spawn`；Git 功能移到按 git 命名的子命令 `git clone`、`git worktree add`、`git fsck`，推送等在会话里直接跑 git；Go API 同样分两层（[0013](decisions/0013-generic-layer-and-git-subcommand.md)） | `dir_test.go`、CLI 测试、`TestAPI` 在 copy 和 overlay 上通过（root 和 uid 65534），关掉当前快照保护、跨层拒绝、通用层不判断被跟踪路径这几项时对应测试失败；2026-10-21 tingly-box 上 `bench/lifecycle.sh` 用新命令在 copy 和 overlay 上 0 失败，旧版本建 base 再用新版本检查修复也 0 失败；tingly-box 目录 `base add` 1.3 秒、每个 overlay 会话约 400 KB | 🔶 |
 | 15. 每会话一个视图路径 | overlay 视图从 `/workspace/<repo>` 改到 `sessions/<id>/root`，去掉 `TINGLY_FUSE_VIEW_ROOT`，所有后端路径模型一致（[0014](decisions/0014-per-session-view-path.md)，取代 [0002](decisions/0002-same-path-private-view.md)） | overlay 测试改为断言每会话路径不同，root 和 uid 65534 下全部通过；2026-10-22 tingly-box 两个不同路径共用 `GOCACHE`，第二个路径 `go build` 不加 `-trimpath` 93 秒、加了 10 秒 | 🔶 |
 | 16. overlay 视图在宿主上可见 | root：`overlay` 直接在宿主上挂内核 overlayfs，没有 holder；非 root：`fuse-overlay`（fuse-overlayfs），`overlay-ns` 保留为显式选项；`exec` 发现挂载丢了就重挂，`drop` 先卸载，卸载失败不删会话（[0015](decisions/0015-host-visible-overlay-view.md)） | `overlay_linux_test.go` 和 manager 全部场景在 root 和 uid 65534 下通过：宿主上读写 `sessions/<id>/root`，`exec` 里互相可见；`drop` 后 `findmnt` 为空，有进程在视图里时 `drop` 报错且不删数据；`umount` 或杀掉 FUSE 守护进程后下一次 `exec` 重挂且写入还在；旧版 overlay 会话用新二进制照常 `exec`。非 root 方案的对比数据见 [bench/hostview.md](../bench/hostview.md) | ✅ |
+| 17. 会话标签 | `spawn --label`、`label <session> k=v / k-`、`list -l`：会话上的自由键值，调用方用它找回自己的会话（[0016](decisions/0016-session-labels.md)） | `session` 包测试（校验、选择器、20 个并发更新都保留）、`labels_test.go`（创建时设置、改、删、按选择器列出、非法键值和失败的创建不留会话）、CLI 测试 | ✅ |
 
 ## 进行中与待做
 

@@ -17,8 +17,9 @@
 // Either:
 //
 //	tingly-fuse exec <session> -- <cmd> [args...]
+//	tingly-fuse label <session> [key=value | key-]...
 //	tingly-fuse share <name> [path...] / unshare <name> <path>...
-//	tingly-fuse drop <session> / list / remove <name> [--force]
+//	tingly-fuse drop <session> / list [-l selector]... / remove <name> [--force]
 package main
 
 import (
@@ -29,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -60,7 +62,12 @@ git repositories (named after the git commands they correspond to):
 either:
   tingly-fuse exec <session> -- <cmd>...   run a command inside a session's view
   tingly-fuse drop <session>               delete a session (unpushed work is lost)
-  tingly-fuse list                         list sessions
+  tingly-fuse list [-l selector]...        list sessions (-l key=value or -l key: only those with
+                                           that label, repeatable; all terms must match)
+  tingly-fuse label <session> [key=value | key-]...
+                                           set labels on a session, or remove one with key-;
+                                           with no arguments print its labels (spawn --label sets
+                                           them when the session is made)
   tingly-fuse share <name> [path...]       share paths across new sessions (no path: list them)
   tingly-fuse unshare <name> <path>...     stop sharing paths in new sessions
   tingly-fuse base list [name]             list repositories, or one repository's bases
@@ -116,8 +123,10 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("usage: tingly-fuse drop <session>")
 		}
 		return m.Drop(ctx, args[0])
+	case "label":
+		return runLabel(m, args)
 	case "list":
-		return runList(m)
+		return runList(m, args)
 	case "remove":
 		fs := flag.NewFlagSet("remove", flag.ContinueOnError)
 		force := fs.Bool("force", false, "drop the repository's sessions first (unpushed work is lost)")
@@ -403,6 +412,8 @@ func runSpawn(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 	fs.StringVar(&opts.ID, "id", "", "session id (default: random)")
 	backendFlag(fs, &opts.Backend)
 	fs.Var((*listFlag)(&opts.Share), "share", "also share this path with other sessions sharing it (repeatable, or comma-separated)")
+	var labels listFlag
+	fs.Var(&labels, "label", "tag the session with key=value (repeatable, or comma-separated)")
 	if len(args) == 0 {
 		return fmt.Errorf("usage: tingly-fuse spawn <name> [flags]")
 	}
@@ -412,6 +423,10 @@ func runSpawn(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("usage: tingly-fuse spawn <name> [flags]")
+	}
+	var err error
+	if opts.Labels, err = tinglyfuse.ParseLabels(labels); err != nil {
+		return err
 	}
 	sess, err := m.Spawn(ctx, opts)
 	if err != nil {
@@ -433,8 +448,13 @@ func runGitWorktreeAdd(ctx context.Context, g *tinglyfuse.Git, args []string) er
 	fs.StringVar(&opts.ID, "id", "", "session id (default: random)")
 	backendFlag(fs, &opts.Backend)
 	fs.Var((*listFlag)(&opts.Share), "share", "also share this path with other sessions sharing it (repeatable, or comma-separated)")
+	var labels listFlag
+	fs.Var(&labels, "label", "tag the session with key=value (repeatable, or comma-separated)")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
+		return err
+	}
+	if opts.Labels, err = tinglyfuse.ParseLabels(labels); err != nil {
 		return err
 	}
 	if len(pos) < 1 || len(pos) > 2 {
@@ -463,19 +483,67 @@ func runExec(ctx context.Context, m *tinglyfuse.Manager, args []string) error {
 	return m.Exec(ctx, args[0], args[2:], os.Stdin, os.Stdout, os.Stderr)
 }
 
-func runList(m *tinglyfuse.Manager) error {
-	sessions, err := m.Sessions()
+func runList(m *tinglyfuse.Manager, args []string) error {
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	var selector listFlag
+	fs.Var(&selector, "l", "only sessions with this label: key=value, or key for any value (repeatable; all must match)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: tingly-fuse list [-l selector]...")
+	}
+	sessions, err := m.SessionsWithLabels(selector)
 	if err != nil {
 		return err
 	}
 	return printSessions(sessions)
 }
 
+// runLabel sets "key=value" labels and removes "key-" ones, then prints the
+// session's labels, one per line.
+func runLabel(m *tinglyfuse.Manager, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: tingly-fuse label <session> [key=value | key-]...")
+	}
+	var set []string
+	var remove []string
+	for _, a := range args[1:] {
+		if k, ok := strings.CutSuffix(a, "-"); ok && !strings.Contains(a, "=") {
+			remove = append(remove, k)
+		} else {
+			set = append(set, a)
+		}
+	}
+	labels, err := tinglyfuse.ParseLabels(set)
+	if err != nil {
+		return err
+	}
+	var sess *tinglyfuse.Session
+	if len(set)+len(remove) == 0 {
+		sess, err = m.Session(args[0])
+	} else {
+		sess, err = m.SetLabels(args[0], labels, remove)
+	}
+	if err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(sess.Labels))
+	for k := range sess.Labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("%s=%s\n", k, sess.Labels[k])
+	}
+	return nil
+}
+
 func printSessions(sessions []*tinglyfuse.Session) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tREPO\tBRANCH\tBASE\tBACKEND\tVIEW")
+	fmt.Fprintln(w, "ID\tREPO\tBRANCH\tBASE\tBACKEND\tLABELS\tVIEW")
 	for _, s := range sessions {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Repo, orDash(s.Branch), shortBase(s.Base), s.Backend, s.ViewPath)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Repo, orDash(s.Branch), shortBase(s.Base), s.Backend, tinglyfuse.FormatLabels(s.Labels), s.ViewPath)
 	}
 	return w.Flush()
 }

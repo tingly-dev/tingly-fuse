@@ -148,7 +148,8 @@ Either kind:
 |---|---|
 | `exec <session> -- <cmd> [args...]` | Run a command inside the session's view |
 | `drop <session>` | Delete the session and its view |
-| `list` | List sessions with repo, branch, base, backend and view path |
+| `list [-l selector]...` | List sessions with repo, branch, base, backend, labels and view path. `-l key=value` (or `-l key` for any value) keeps only sessions with that label; repeat it to require several |
+| `label <session> [key=value \| key-]...` | Set labels on a session, remove one with `key-`, or print them with no arguments ([ADR 0016](.design/decisions/0016-session-labels.md)) |
 | `share <name> [path...]` / `unshare <name> <path>...` | Share directories or files across all new sessions, such as caches or `.env`: one copy on the host, bind mounted under overlay and symlinked under copy and clone; no path lists them ([ADR 0011](.design/decisions/0011-shared-paths.md)) |
 | `base list [name]` | Without a name, list repositories with their kind, session and base counts, and source. With one, list its bases: creation time, the sessions using them, and the head commit and pin state (git) or which one is current (directory) |
 | `base rm <name> <id>` | Delete a base no session uses (`id` may be a unique prefix); git gc then reclaims objects only it needed. A directory's current snapshot is kept |
@@ -168,6 +169,7 @@ The commands before this split (`repo add`, `spawn`, `push`, `repo check`, `repo
 | `--base <id>` | Reuse an existing base (the id `git worktree add` prints as `base:`, or the BASE column of `list`) |
 | `--id <id>` | Session id (default: random) |
 | `--backend <name>` | `overlay`, `fuse-overlay`, `overlay-ns`, `clone` or `copy` (default depends on the platform and user) |
+| `--label <key=value>` | Tag the session (repeatable or comma-separated); tingly-fuse never interprets labels, so a script or agent framework can use them to find its sessions again |
 | `--share <path>` | Also share this path, on top of the repository's shared paths, with every other session spawned with it (repeatable or comma-separated) |
 
 `spawn` takes `--base`, `--id`, `--backend` and `--share` with the same meaning. If either fails partway, it cleans up everything it created.
@@ -239,7 +241,7 @@ A backend only decides where a session's file tree lives and how to start a proc
 │   ├── objects.git            git only: bare mirror; the only place objects are stored
 │   └── modules/<hash>.git     git only: submodule mirrors, shared across bases
 └── sessions/<id>/
-    ├── session.json           repo, base, branch, backend, view path
+    ├── session.json           repo, base, branch, backend, view path, labels
     └── ...                    backend state (overlay upper/work; overlay-ns holder.json)
 ```
 

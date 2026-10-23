@@ -197,6 +197,28 @@ func TestCommands(t *testing.T) {
 	c.fails(1, []string{"mutually exclusive"}, "git", "worktree", "add", "demo", "main", "--base", "x")
 	c.fails(1, []string{"no base"}, "git", "worktree", "add", "demo", "--base", "nope")
 
+	// Labels: set at spawn, changed later, used to filter list.
+	c.ok("git", "worktree", "add", "demo", "--id", "l1", "--backend", "copy", "--label", "task=login,owner=x", "--label", "tier=1")
+	c.ok("git", "worktree", "add", "demo", "--id", "l2", "--backend", "copy", "--label", "task=billing")
+	if out := c.ok("label", "l1"); out != "owner=x\ntask=login\ntier=1" {
+		t.Errorf("labels of l1: %q", out)
+	}
+	if out := c.ok("label", "l1", "task=refactor", "owner-"); out != "task=refactor\ntier=1" {
+		t.Errorf("after label change: %q", out)
+	}
+	if out := c.ok("list", "-l", "task"); !strings.Contains(out, "l1") || !strings.Contains(out, "l2") {
+		t.Errorf("list -l task:\n%s", out)
+	}
+	if out := c.ok("list", "-l", "task=refactor", "-l", "tier=1"); !strings.Contains(out, "l1") || strings.Contains(out, "l2") || !strings.Contains(out, "task=refactor,tier=1") {
+		t.Errorf("list -l task=refactor -l tier=1:\n%s", out)
+	}
+	c.fails(1, []string{"want key=value"}, "label", "l1", "oops")
+	c.fails(1, []string{"invalid label"}, "git", "worktree", "add", "demo", "--id", "l3", "--backend", "copy", "--label", "bad key=v")
+	c.fails(1, []string{"usage: tingly-fuse label"}, "label")
+	c.fails(1, []string{"usage: tingly-fuse list"}, "list", "extra")
+	c.ok("drop", "l1")
+	c.ok("drop", "l2")
+
 	// exec passes stdout through and propagates the exit code.
 	if out := c.ok("exec", "a", "--", "sh", "-c", `echo "$TINGLY_SESSION"; cat README.md`); out != "a\nhello" {
 		t.Errorf("exec output = %q", out)
